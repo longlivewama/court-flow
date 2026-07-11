@@ -146,4 +146,4 @@ npm test    # Jest unit tests with coverage
 
 ## License
 
-All rights reserved.
+MIT — see [LICENSE](./LICENSE).
