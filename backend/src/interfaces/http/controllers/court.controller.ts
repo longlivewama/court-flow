@@ -269,8 +269,22 @@ export async function getClubSettings(req: Request, res: Response, next: NextFun
 
 export async function updateClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
-            reminder24hEnabled, reminder2hEnabled, name, email, phone, address } = req.body;
+    // Accept both camelCase (API convention) and the admin settings page's
+    // snake_case field names (club_name, contact_email, contact_phone,
+    // cancellation_cutoff_hrs, deposit_percentage) — same dual-naming pattern
+    // used for bookings in booking.controller.ts.
+    const body = req.body;
+    const depositPercent             = body.depositPercent             ?? body.deposit_percentage;
+    const cancellationDeadlineHours  = body.cancellationDeadlineHours  ?? body.cancellation_cutoff_hrs;
+    const pendingDepositExpiryMinutes = body.pendingDepositExpiryMinutes ?? body.pending_deposit_expiry_minutes;
+    const noshowGraceMinutes         = body.noshowGraceMinutes         ?? body.noshow_grace_minutes;
+    const reminder24hEnabled         = body.reminder24hEnabled         ?? body.reminder_24h_enabled;
+    const reminder2hEnabled          = body.reminder2hEnabled          ?? body.reminder_2h_enabled;
+    const name                       = body.name                       ?? body.club_name;
+    const email                      = body.email                      ?? body.contact_email;
+    const phone                      = body.phone                      ?? body.contact_phone;
+    const address                    = body.address;
+
     const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [CLUB_ID]);
     const { rows } = await db.query(
       `UPDATE clubs SET
