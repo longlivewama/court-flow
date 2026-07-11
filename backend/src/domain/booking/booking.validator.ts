@@ -3,23 +3,28 @@
  * Server-side validation algorithm as specified in SRS §8.4, §10, and §14.
  *
  * Checks (in order):
- *   1. Club is open (working hours, Africa/Cairo timezone)
+ *   1. Duration is allowed (60, 90, or 120 min)
+ *   2. Court exists and status is 'available'
+ *   3. Slot fits within the club's configured working hours (clients only)
  *      → SKIPPED for Admin / Staff / Receptionist (bypassWorkingHours = true)
- *   2. Duration is allowed (60, 90, or 120 min)
- *   3. Slot fits within working hours for that day (clients only)
- *   4. Court exists and status is 'available'
- *   5. No blocked period overlaps the slot
- *   6. No confirmed/checked_in booking overlaps the slot
+ *   4. No blocked period overlaps the slot
+ *   5. No confirmed/checked_in booking overlaps the slot
+ *
+ * Working hours are read live from the `working_hours` table and support
+ * arbitrary schedules — including 24-hour operation and shifts that cross
+ * midnight — rather than any hardcoded closing time. See
+ * assertWithinWorkingHours below for the windowing model.
  *
  * Pessimistic locking is handled at the use-case level via SELECT … FOR UPDATE.
  */
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { getDay, getHours, getMinutes, addMinutes } from 'date-fns';
+import { getDay, addMinutes, addDays, startOfDay } from 'date-fns';
 import { PoolClient } from 'pg';
 import { ValidationError, ConflictError } from '../../shared/errors';
 
 const CLUB_TIMEZONE = 'Africa/Cairo';
 const ALLOWED_DURATIONS = [60, 90, 120] as const;
+const MINUTES_PER_DAY = 24 * 60;
 
 export interface ValidateBookingParams {
   clubId:             string;
@@ -95,6 +100,11 @@ export async function validateBookingSlot(
   }
 
   // ── 5. Existing confirmed booking overlap ─────────────────
+  // Overlap is computed on absolute UTC timestamps (start_time / end_time),
+  // and end_time is persisted as start + duration. A booking that crosses
+  // midnight therefore has an end_time on the next calendar day, and this
+  // half-open interval test (existing.start < new.end AND existing.end > new.start)
+  // stays correct across the day boundary with no special-casing.
   const excludeClause = excludeBookingId ? `AND id != '${excludeBookingId}'` : '';
   const { rows: conflictRows } = await client.query(
     `SELECT id FROM bookings
@@ -113,89 +123,138 @@ export async function validateBookingSlot(
   }
 }
 
-// Overnight cut-off: slots between 00:00 and before this hour belong
-// to the *previous* calendar day's business shift (e.g. a shift that
-// opened at 12:00 PM and closes at 06:00 AM the following morning).
-const OVERNIGHT_CUTOFF_HOUR = 6;
+interface WorkingHourRow {
+  day_of_week: number;
+  open_time:   string;   // 'HH:MM:SS'
+  close_time:  string;   // 'HH:MM:SS'
+  is_closed:   boolean;
+}
 
+/** Absolute open window as an epoch-millisecond half-open interval [open, close). */
+interface OpenInterval {
+  open:  number;
+  close: number;
+}
+
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+/**
+ * Resolve one configured day into an absolute UTC open interval, or null when
+ * the club is closed that day.
+ *
+ * `cairoMidnight` is the Cairo-local midnight (wall-clock Date) of the calendar
+ * day being resolved. Interpretation of (open_time, close_time):
+ *
+ *   • is_closed              → closed (null)
+ *   • open === close         → 24-hour operation: [open, open + 24h)
+ *   • close === 23:59        → end-of-day sentinel treated as 24:00, so a
+ *                              full-day 00:00–23:59 config is continuous
+ *                              (the `time` column cannot store 24:00)
+ *   • close  <= open         → overnight shift: close rolls to the next day
+ *   • otherwise              → same-day window [open, close)
+ *
+ * Wall-clock minutes are converted to true UTC instants via fromZonedTime, so
+ * the result is correct across DST transitions.
+ */
+function resolveDayWindow(cairoMidnight: Date, wh: WorkingHourRow): OpenInterval | null {
+  if (wh.is_closed) return null;
+
+  const openMin = timeToMinutes(wh.open_time);
+  let closeMin  = timeToMinutes(wh.close_time);
+
+  let startMin: number;
+  let endMin:   number;
+
+  if (openMin === closeMin) {
+    // Canonical 24-hour operation.
+    startMin = openMin;
+    endMin   = openMin + MINUTES_PER_DAY;
+  } else {
+    if (closeMin === MINUTES_PER_DAY - 1) closeMin = MINUTES_PER_DAY; // 23:59 → midnight
+    startMin = openMin;
+    endMin   = closeMin <= openMin ? closeMin + MINUTES_PER_DAY : closeMin;
+  }
+
+  const openWall  = addMinutes(cairoMidnight, startMin);
+  const closeWall = addMinutes(cairoMidnight, endMin);
+  return {
+    open:  fromZonedTime(openWall,  CLUB_TIMEZONE).getTime(),
+    close: fromZonedTime(closeWall, CLUB_TIMEZONE).getTime(),
+  };
+}
+
+/** Merge intervals that overlap or touch, so adjacent day-windows form one span. */
+function mergeIntervals(intervals: OpenInterval[]): OpenInterval[] {
+  if (intervals.length <= 1) return intervals;
+  const sorted = [...intervals].sort((a, b) => a.open - b.open);
+  const merged: OpenInterval[] = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (sorted[i].open <= last.close) {
+      last.close = Math.max(last.close, sorted[i].close);
+    } else {
+      merged.push({ ...sorted[i] });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Assert the booking [startTime, endTime) lies fully within the club's
+ * configured operating hours. Handles 24-hour clubs and midnight-spanning
+ * shifts by evaluating the windows of the surrounding calendar days as
+ * absolute UTC intervals and merging any that meet at the day boundary.
+ */
 async function assertWithinWorkingHours(
   client: PoolClient,
   clubId: string,
   startTime: Date,
   endTime: Date
 ): Promise<void> {
-  // Convert UTC times to Cairo timezone for working-hours validation
-  const startCairo = toZonedTime(startTime, CLUB_TIMEZONE);
-  const endCairo   = toZonedTime(endTime,   CLUB_TIMEZONE);
-
-  const startHourCairo = getHours(startCairo);
-
-  // ── Overnight shift correction ────────────────────────────────
-  // If the local hour is before the overnight cutoff (00:00–05:59) the
-  // slot belongs to the PREVIOUS calendar day's business window.
-  // Shift dayOfWeek back by 1 and add 1 440 min so the arithmetic is
-  // continuous (e.g. 01:00 AM becomes minute 1 500 relative to a
-  // 12:00 PM open rather than minute 60, which would wrongly pass the
-  // open-time check).
-  const isPostMidnight = startHourCairo < OVERNIGHT_CUTOFF_HOUR;
-
-  // Logical day-of-week (0=Sunday … 6=Saturday), shifted back when post-midnight
-  const rawDay    = getDay(startCairo);
-  const dayOfWeek = isPostMidnight ? (rawDay + 6) % 7 : rawDay;
-
-  // Slot minutes in continuous arithmetic (post-midnight slots get +1 440)
-  const rawStartMin = startHourCairo * 60 + getMinutes(startCairo);
-  const rawEndMin   = getHours(endCairo) * 60 + getMinutes(endCairo);
-
-  const slotStartMinutes = isPostMidnight ? rawStartMin + 24 * 60 : rawStartMin;
-  const slotEndMinutes   = isPostMidnight ? rawEndMin   + 24 * 60 : rawEndMin;
-
-  const { rows } = await client.query<{
-    open_time:  string; // HH:MM:SS
-    close_time: string;
-    is_closed:  boolean;
-  }>(
-    `SELECT open_time, close_time, is_closed
+  const { rows } = await client.query<WorkingHourRow>(
+    `SELECT day_of_week, open_time, close_time, is_closed
      FROM working_hours
-     WHERE club_id = $1 AND day_of_week = $2`,
-    [clubId, dayOfWeek]
+     WHERE club_id = $1`,
+    [clubId]
   );
 
   if (!rows.length) {
-    throw new ValidationError('Club working hours are not configured for this day');
+    throw new ValidationError('Club working hours are not configured');
   }
 
-  const wh = rows[0];
-  if (wh.is_closed) {
-    throw new ValidationError('The club is closed on this day');
+  const byDay = new Map<number, WorkingHourRow>(rows.map((r) => [r.day_of_week, r]));
+
+  const startCairo   = toZonedTime(startTime, CLUB_TIMEZONE);
+  const baseMidnight = startOfDay(startCairo);
+
+  // A slot can fall under the window of the day it starts on, the PREVIOUS day
+  // (an overnight shift that ran past midnight), or extend into the NEXT day.
+  const intervals: OpenInterval[] = [];
+  for (const offset of [-1, 0, 1]) {
+    const dayMidnight = addDays(baseMidnight, offset);
+    const wh = byDay.get(getDay(dayMidnight));
+    if (!wh) continue;
+    const window = resolveDayWindow(dayMidnight, wh);
+    if (window) intervals.push(window);
   }
 
-  // Parse HH:MM into minutes-since-midnight
-  const [openH,  openM]  = wh.open_time.split(':').map(Number);
-  const [closeH, closeM] = wh.close_time.split(':').map(Number);
+  const startMs = startTime.getTime();
+  const endMs   = endTime.getTime();
+  const isOpen  = mergeIntervals(intervals).some(
+    (iv) => startMs >= iv.open && endMs <= iv.close
+  );
+  if (isOpen) return;
 
-  const openMinutes  = openH  * 60 + openM;
-  const closeMinutes = closeH * 60 + closeM;
-
-  // Normalise after-midnight close time into the continuous window
-  // (e.g. 06:00 close on a shift opened at 12:00 = 1 800 min)
-  const effectiveClose =
-    closeMinutes <= openMinutes ? closeMinutes + 24 * 60 : closeMinutes;
-
-  // Normalise slot end the same way (only when NOT already shifted by +1 440)
-  const effectiveEnd =
-    !isPostMidnight && slotEndMinutes < slotStartMinutes
-      ? slotEndMinutes + 24 * 60
-      : slotEndMinutes;
-
-  if (slotStartMinutes < openMinutes) {
-    throw new ValidationError(
-      `Booking must start at or after ${wh.open_time} (club opening time)`
-    );
+  // Not open — surface a message based on the start day's configuration.
+  const startDay = byDay.get(getDay(startCairo));
+  if (!startDay || startDay.is_closed) {
+    throw new ValidationError('The club is closed at the selected time.');
   }
-  if (effectiveEnd > effectiveClose) {
-    throw new ValidationError(
-      `Booking must end by ${wh.close_time} (club closing time)`
-    );
-  }
+  throw new ValidationError(
+    `Booking must fall within the club's working hours ` +
+    `(${startDay.open_time.slice(0, 5)}–${startDay.close_time.slice(0, 5)}).`
+  );
 }

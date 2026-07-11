@@ -42,6 +42,15 @@ const DEFAULTS: ClubSettings = {
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+/**
+ * A day runs 24 hours when open === close (canonical) or spans the full day as
+ * 00:00 → 23:59 (the end-of-day sentinel the backend normalises to midnight).
+ * Mirrors resolveDayWindow() in backend booking.validator.ts.
+ */
+function is24Hours(openTime: string, closeTime: string): boolean {
+  return openTime === closeTime || (openTime === '00:00' && closeTime === '23:59');
+}
+
 const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
 export default function SettingsPage() {
@@ -346,6 +355,15 @@ export default function SettingsPage() {
                           setSaved(false);
                         }}
                       />
+                      {is24Hours(wh.openTime, wh.closeTime) ? (
+                        <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          · Open 24 hours
+                        </span>
+                      ) : wh.closeTime <= wh.openTime ? (
+                        <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                          · closes next day
+                        </span>
+                      ) : null}
                     </div>
                   ) : (
                     <div style={{ fontSize: 13, color: 'var(--text-tertiary)', width: 214, textAlign: 'center', fontStyle: 'italic' }}>

@@ -260,9 +260,9 @@ export default function BookCourtPage() {
 
   // Build the booking start as a Cairo-local datetime, then convert to UTC.
   //
-  // OVERNIGHT BOUNDARY RULE (mirrors backend OVERNIGHT_CUTOFF_HOUR = 6):
-  //   The backend schedule window for a given date spans:
-  //     12:00 PM that date (Cairo) → 06:00 AM the NEXT calendar day (Cairo)
+  // OVERNIGHT BOUNDARY RULE (aligns the picker with the dashboard schedule
+  // window in getDailySchedule, which spans 12:00 PM a date → 06:00 AM the
+  // NEXT calendar day, Cairo):
   //
   //   So booking "01:00 AM" while the date picker shows "July 11" means
   //   01:00 AM Cairo on July 12 (the close-of-night of the July 11 shift),
@@ -270,11 +270,17 @@ export default function BookCourtPage() {
   //
   //   Rule: if selectedHour < 6, the physical Cairo calendar date = selectedDate + 1.
   //
+  // This only affects which calendar day an early-morning slot maps to; the
+  // booking's legality is decided server-side against the club's configured
+  // working hours (booking.validator.ts), which now supports 24-hour and
+  // midnight-spanning schedules — early-morning and cross-midnight slots are
+  // no longer rejected outright.
+  //
   // We pass the string literal directly to fromZonedTime (not via new Date())
   // to avoid browser-local-timezone ambiguity on ISO strings without a Z suffix.
   const pad = (n: number) => String(n).padStart(2, '0');
 
-  const OVERNIGHT_CUTOFF = 6; // must stay in sync with backend booking.validator.ts
+  const OVERNIGHT_CUTOFF = 6; // schedule business-day boundary (see getDailySchedule)
 
   // Resolve the physical Cairo calendar date for this slot.
   const cairoCalendarDate = (() => {
