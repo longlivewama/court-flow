@@ -1,0 +1,12 @@
+# CourtFlow
+node_modules/
+dist/
+.env
+*.env.local
+uploads/
+keys/
+*.pem
+.next/
+coverage/
+*.log
+.DS_Store

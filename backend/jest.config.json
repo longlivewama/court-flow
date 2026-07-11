@@ -1,0 +1,28 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "roots": ["<rootDir>/__tests__"],
+  "transform": {
+    "^.+\\.tsx?$": ["ts-jest", { "tsconfig": "tsconfig.json" }]
+  },
+  "moduleNameMapper": {
+    "^@domain/(.*)$": "<rootDir>/src/domain/$1",
+    "^@application/(.*)$": "<rootDir>/src/application/$1",
+    "^@infrastructure/(.*)$": "<rootDir>/src/infrastructure/$1",
+    "^@interfaces/(.*)$": "<rootDir>/src/interfaces/$1",
+    "^@shared/(.*)$": "<rootDir>/src/shared/$1"
+  },
+  "collectCoverageFrom": [
+    "src/domain/**/*.ts",
+    "src/application/**/*.ts",
+    "!src/**/*.d.ts"
+  ],
+  "coverageThreshold": {
+    "global": {
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
+    }
+  }
+}

@@ -1,0 +1,384 @@
+/**
+ * Court Controller – Court CRUD, availability checking, working hours, blocked periods, daily schedule.
+ */
+import { Request, Response, NextFunction } from 'express';
+import { db } from '../../../infrastructure/database/client';
+import { withTransaction } from '../../../infrastructure/database/client';
+import { redis, CACHE_KEYS, CACHE_TTL } from '../../../infrastructure/cache/redis.client';
+import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
+import { NotFoundError, ValidationError } from '../../../shared/errors';
+import { addMinutes, startOfDay, endOfDay } from 'date-fns';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+
+const CLUB_ID   = process.env.CLUB_ID!;
+const TIMEZONE  = 'Africa/Cairo';
+
+// ── GET /api/courts ───────────────────────────────────────────
+export async function listCourts(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    // Cache court list for 30 seconds
+    const cacheKey = CACHE_KEYS.courtList(CLUB_ID);
+    const cached   = await redis.get(cacheKey);
+    if (cached) { res.json(JSON.parse(cached)); return; }
+
+    const { rows } = await db.query(
+      `SELECT *,
+              number        AS court_number,
+              price_per_slot AS price_per_hour,
+              COALESCE(description, '') AS surface_type,
+              FALSE AS is_indoor
+       FROM courts WHERE club_id=$1 AND is_active=true ORDER BY number`,
+      [CLUB_ID]
+    );
+
+    await redis.setex(cacheKey, CACHE_TTL.courtList, JSON.stringify(rows));
+    res.json(rows);
+  } catch (err) { next(err); }
+}
+
+
+// ── GET /api/courts/:id ───────────────────────────────────────
+export async function getCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { rows } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, CLUB_ID]);
+    if (!rows.length) throw new NotFoundError('Court', req.params.id);
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+// ── POST /api/courts (owner only) ────────────────────────────
+export async function createCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { name, description, pricePerSlot, status } = req.body;
+    let { number } = req.body;
+
+    // Validate required fields up-front for a clean 400 error
+    if (!name || name.trim() === '') {
+      throw new ValidationError('Court name is required');
+    }
+    if (pricePerSlot === undefined || pricePerSlot === null || Number(pricePerSlot) <= 0) {
+      throw new ValidationError('pricePerSlot must be a positive number');
+    }
+
+    // Auto-assign the next court number if the caller didn't provide one
+    if (number === undefined || number === null) {
+      const { rows: maxRows } = await db.query<{ max_number: number | null }>(
+        `SELECT COALESCE(MAX(number), 0) AS max_number FROM courts WHERE club_id = $1`,
+        [CLUB_ID]
+      );
+      number = (maxRows[0]?.max_number ?? 0) + 1;
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO courts (club_id, name, number, description, price_per_slot, status)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [CLUB_ID, name.trim(), number, description?.trim() ?? null, Number(pricePerSlot), status ?? 'available']
+    );
+    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.COURT_CREATED,
+      entityType: 'court', entityId: rows[0].id, newValues: rows[0] });
+    res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+// ── PATCH /api/courts/:id (owner only) ────────────────────────
+export async function updateCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { name, number, description, pricePerSlot, status } = req.body;
+    const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, CLUB_ID]);
+    if (!old.length) throw new NotFoundError('Court', req.params.id);
+
+    const { rows } = await db.query(
+      `UPDATE courts SET name=COALESCE($2,name), number=COALESCE($3,number),
+       description=COALESCE($4,description), price_per_slot=COALESCE($5,price_per_slot),
+       status=COALESCE($6,status), updated_at=NOW()
+       WHERE id=$1 AND club_id=$7 RETURNING *`,
+      [req.params.id, name, number, description, pricePerSlot, status, CLUB_ID]
+    );
+    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.COURT_UPDATED, entityType: 'court', entityId: req.params.id,
+      previousValues: old[0], newValues: rows[0] });
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+// ── DELETE /api/courts/:id (owner only) ───────────────────────
+export async function deleteCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { rows } = await db.query(
+      `UPDATE courts SET is_active=false, updated_at=NOW() WHERE id=$1 AND club_id=$2 RETURNING *`,
+      [req.params.id, CLUB_ID]
+    );
+    if (!rows.length) throw new NotFoundError('Court', req.params.id);
+    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.COURT_DELETED, entityType: 'court', entityId: req.params.id });
+    res.json({ message: 'Court deactivated' });
+  } catch (err) { next(err); }
+}
+
+// ── GET /api/courts/:id/availability?date=2026-07-10 ──────────
+export async function getCourtAvailability(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { date } = req.query as { date?: string };
+    if (!date) throw new ValidationError('date query parameter is required (YYYY-MM-DD)');
+
+    // Convert date to UTC range based on Cairo timezone
+    const dayStartCairo = fromZonedTime(`${date}T00:00:00`, TIMEZONE);
+    const dayEndCairo   = fromZonedTime(`${date}T23:59:59`, TIMEZONE);
+
+    // Get working hours for this day
+    const cairoDay = toZonedTime(dayStartCairo, TIMEZONE);
+    const dayOfWeek = cairoDay.getDay();
+    const { rows: wh } = await db.query(
+      `SELECT * FROM working_hours WHERE club_id=$1 AND day_of_week=$2`,
+      [CLUB_ID, dayOfWeek]
+    );
+
+    // Get existing confirmed bookings for this court on this day
+    const { rows: existing } = await db.query(
+      `SELECT start_time, end_time, status FROM bookings
+       WHERE court_id=$1 AND club_id=$2
+         AND status IN ('confirmed','checked_in','pending_verification','pending_deposit')
+         AND start_time >= $3 AND start_time <= $4
+       ORDER BY start_time`,
+      [req.params.id, CLUB_ID, dayStartCairo.toISOString(), dayEndCairo.toISOString()]
+    );
+
+    // Get blocked periods
+    const { rows: blocked } = await db.query(
+      `SELECT start_at, end_at, title, type FROM blocked_periods
+       WHERE club_id=$1 AND (court_id=$2 OR court_id IS NULL)
+         AND start_at <= $4 AND end_at >= $3`,
+      [CLUB_ID, req.params.id, dayStartCairo.toISOString(), dayEndCairo.toISOString()]
+    );
+
+    res.json({ workingHours: wh[0] ?? null, bookedSlots: existing, blockedPeriods: blocked });
+  } catch (err) { next(err); }
+}
+
+// ── GET /api/dashboard/schedule?date=2026-07-10 ──────────────
+// The operational business day runs from 12:00 PM (noon) on the
+// requested date to 06:00 AM the FOLLOWING calendar day (overnight
+// shift). We therefore query a 18-hour UTC window anchored at noon
+// Cairo time rather than the strict 00:00–23:59 calendar window.
+export async function getDailySchedule(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const date = (req.query.date as string) ?? new Date().toISOString().slice(0, 10);
+
+    // Business-day window: noon of the requested date → 06:00 AM next day (Cairo)
+    const windowStart = fromZonedTime(`${date}T12:00:00`, TIMEZONE); // 12:00 PM → UTC
+    // Next calendar date
+    const [y, m, d]   = date.split('-').map(Number);
+    const nextDate    = new Date(Date.UTC(y, m - 1, d + 1));
+    const nextDateStr = nextDate.toISOString().slice(0, 10);
+    const windowEnd   = fromZonedTime(`${nextDateStr}T06:00:00`, TIMEZONE); // 06:00 AM next day → UTC
+
+    // Inverse map: DB lowercase → frontend uppercase enum key
+    const DB_TO_REASON: Record<string, string> = {
+      maintenance:  'MAINTENANCE',
+      tournament:   'TOURNAMENT',
+      private_event:'TRAINING',
+      other:        'ADMIN_CLOSED',
+      holiday:      'ADMIN_CLOSED',
+    };
+
+    const [bookingsResult, blockedResult] = await Promise.all([
+      db.query(
+        `SELECT b.*, c.name AS court_name, c.number AS court_number,
+                u.first_name, u.last_name, u.email AS customer_email, u.phone AS customer_phone,
+                p.status AS payment_status,
+                b.total_price, b.deposit_amount, b.deposit_method, b.remainder_amount, b.remainder_method
+         FROM bookings b
+         JOIN courts c ON c.id = b.court_id
+         JOIN users  u ON u.id = b.customer_id
+         LEFT JOIN payments p ON p.booking_id = b.id
+         WHERE b.club_id=$1
+           AND b.start_time >= $2
+           AND b.start_time <  $3
+           AND b.status NOT IN ('cancelled','expired')
+         ORDER BY b.start_time, c.number`,
+        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+      ),
+      db.query(
+        `SELECT bp.id, bp.court_id, bp.type AS reason_type, bp.title,
+                bp.start_at, bp.end_at, bp.recurring
+         FROM blocked_periods bp
+         WHERE bp.club_id = $1
+           AND bp.start_at <  $3
+           AND bp.end_at   >  $2
+         ORDER BY bp.start_at`,
+        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+      ),
+    ]);
+
+    // Normalise blocked period reason_type to uppercase frontend enum keys
+    const blockedPeriods = blockedResult.rows.map((bp: Record<string, unknown>) => ({
+      ...bp,
+      reason_type: DB_TO_REASON[bp.reason_type as string] ?? 'ADMIN_CLOSED',
+    }));
+
+    res.json({
+      bookings:       bookingsResult.rows,
+      blockedPeriods,
+    });
+  } catch (err) { next(err); }
+}
+
+// ── GET/PUT working hours ──────────────────────────────────────
+export async function getWorkingHours(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { rows } = await db.query(`SELECT * FROM working_hours WHERE club_id=$1 ORDER BY day_of_week`, [CLUB_ID]);
+    res.json(rows);
+  } catch (err) { next(err); }
+}
+
+import { workingHoursSchema } from '../../../shared/schemas';
+
+export async function upsertWorkingHours(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const parsed = workingHoursSchema.parse(req.body);
+    const { hours } = parsed;
+    await withTransaction(async (client) => {
+      for (const h of hours) {
+        await client.query(
+          `INSERT INTO working_hours (club_id,day_of_week,open_time,close_time,is_closed)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (club_id,day_of_week) DO UPDATE
+             SET open_time=$3, close_time=$4, is_closed=$5, updated_at=NOW()`,
+          [CLUB_ID, h.dayOfWeek, h.openTime, h.closeTime, h.isClosed]
+        );
+      }
+    });
+    await redis.del(CACHE_KEYS.workingHours(CLUB_ID));
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.WORKING_HOURS_UPDATED, entityType: 'working_hours' });
+    res.json({ message: 'Working hours updated' });
+  } catch (err) { next(err); }
+}
+
+// ── Club settings ─────────────────────────────────────────────
+export async function getClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { rows } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [CLUB_ID]);
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+export async function updateClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
+            reminder24hEnabled, reminder2hEnabled, name, email, phone, address } = req.body;
+    const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [CLUB_ID]);
+    const { rows } = await db.query(
+      `UPDATE clubs SET
+         deposit_percent=COALESCE($2,deposit_percent),
+         cancellation_deadline_hours=COALESCE($3,cancellation_deadline_hours),
+         pending_deposit_expiry_minutes=COALESCE($4,pending_deposit_expiry_minutes),
+         noshow_grace_minutes=COALESCE($5,noshow_grace_minutes),
+         reminder_24h_enabled=COALESCE($6,reminder_24h_enabled),
+         reminder_2h_enabled=COALESCE($7,reminder_2h_enabled),
+         name=COALESCE($8,name), email=COALESCE($9,email),
+         phone=COALESCE($10,phone), address=COALESCE($11,address),
+         updated_at=NOW()
+       WHERE id=$1 RETURNING *`,
+      [CLUB_ID, depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
+       reminder24hEnabled, reminder2hEnabled, name, email, phone, address]
+    );
+    await redis.del(CACHE_KEYS.clubSettings(CLUB_ID));
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.SETTINGS_UPDATED, entityType: 'club',
+      previousValues: old[0], newValues: rows[0] });
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+// Strict enum for blocked period reason types (frontend-facing uppercase)
+const REASON_TYPES = ['MAINTENANCE', 'TOURNAMENT', 'TRAINING', 'ADMIN_CLOSED'] as const;
+type ReasonType = typeof REASON_TYPES[number];
+
+/**
+ * Maps the frontend's display enum to the Postgres `blocked_period_type` enum.
+ * DB allowed values: maintenance | private_event | holiday | tournament | other
+ */
+const DB_REASON_MAP: Record<ReasonType, string> = {
+  MAINTENANCE:  'maintenance',
+  TOURNAMENT:   'tournament',
+  TRAINING:     'private_event',  // closest DB enum value
+  ADMIN_CLOSED: 'other',
+};
+
+/**
+ * Inverse map: DB lowercase string → frontend uppercase TS union key.
+ * Used when returning the inserted row so the modal receives a value
+ * that resolves correctly in the REASON_CONFIG dictionary.
+ */
+const DB_TO_REASON_TYPE: Record<string, ReasonType> = {
+  maintenance:   'MAINTENANCE',
+  tournament:    'TOURNAMENT',
+  private_event: 'TRAINING',
+  other:         'ADMIN_CLOSED',
+  holiday:       'ADMIN_CLOSED',
+};
+
+export async function createBlockedPeriod(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { z } = await import('zod');
+    const schema = z.object({
+      courtId:     z.string().uuid().nullable().optional(),
+      reasonType:  z.enum(REASON_TYPES),
+      reason_type: z.enum(REASON_TYPES).optional(),
+      title:       z.string().min(1).max(120),
+      startAt:     z.string(),
+      endAt:       z.string(),
+      recurring:   z.boolean().optional().default(false),
+    });
+
+    const body = schema.parse(req.body);
+    const reasonType: ReasonType = body.reasonType ?? (body.reason_type as ReasonType);
+    const startAt = new Date(body.startAt);
+    const endAt   = new Date(body.endAt);
+
+    if (startAt >= endAt) {
+      throw new ValidationError('startAt must be before endAt');
+    }
+
+    // Only sanity-check that the range is non-empty; admins are NOT restricted
+    // by business hours – the operational window check has been removed so that
+    // Tournaments, Maintenance windows, etc. can span any hours of the day.
+
+    const { rows } = await db.query(
+      `INSERT INTO blocked_periods (club_id, court_id, type, title, start_at, end_at, recurring, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [CLUB_ID, body.courtId ?? null, DB_REASON_MAP[reasonType], body.title, body.startAt, body.endAt, body.recurring ?? false, req.user!.sub]
+    );
+
+    await auditLog({
+      clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_CREATED,
+      entityType: 'blocked_period', entityId: rows[0].id, newValues: rows[0]
+    });
+
+    // Return the row with reason_type normalised back to the frontend uppercase
+    // enum key so the schedule modal never receives a raw lowercase DB string.
+    const normalizedReasonType: ReasonType =
+      DB_TO_REASON_TYPE[rows[0].type as string] ?? 'ADMIN_CLOSED';
+
+    res.status(201).json({ ...rows[0], reason_type: normalizedReasonType });
+  } catch (err) { next(err); }
+}
+
+export async function deleteBlockedPeriod(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { rows } = await db.query(
+      `DELETE FROM blocked_periods WHERE id=$1 AND club_id=$2 RETURNING *`,
+      [req.params.bpId, CLUB_ID]
+    );
+    if (!rows.length) throw new NotFoundError('Blocked period', req.params.bpId);
+    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_DELETED, entityType: 'blocked_period', entityId: req.params.bpId });
+    res.json({ message: 'Blocked period removed' });
+  } catch (err) { next(err); }
+}
