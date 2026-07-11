@@ -10,6 +10,7 @@
 import { PoolClient } from 'pg';
 import { withTransaction } from '../../infrastructure/database/client';
 import { validateBookingSlot } from '../../domain/booking/booking.validator';
+import { assertTransition, assertPaymentTransition } from '../../domain/booking/booking.state-machine';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
 
@@ -86,12 +87,14 @@ export async function createBooking(
     // ── Calculate financial snapshot ───────────────────────────
     const durationMultiplier = input.durationMinutes / 60;
     const totalPrice    = price_per_slot * durationMultiplier;
-    
+
     // Apply discount for final calculation
     const finalPrice = Math.max(totalPrice - (input.discountAmount ?? 0), 0);
-    const depositAmount = input.depositAmount ?? Math.round((finalPrice * deposit_percent / 100) * 100) / 100;
-    
-    const deposit_status = input.depositMethod && input.depositMethod !== 'NONE' ? 'DEPOSIT_PAID' : 'NOT_PAID';
+    const requiredDeposit = Math.round((finalPrice * deposit_percent / 100) * 100) / 100;
+    const depositAmount = input.depositAmount ?? requiredDeposit;
+    const remainderAmount = input.remainderAmount ?? 0;
+    const totalCollected = depositAmount + remainderAmount;
+
     const remainingBalance = Math.max(Math.round((finalPrice - (input.depositAmount ?? 0) - (input.remainderAmount ?? 0)) * 100) / 100, 0);
 
     const endTime = new Date(
@@ -99,8 +102,34 @@ export async function createBooking(
     );
 
     // ── Determine initial status ───────────────────────────────
-    const initialStatus =
-      input.createdByRole === 'receptionist' ? 'draft' : 'pending_deposit';
+    // Staff (owner/receptionist) collecting cash-in-hand at booking time IS the
+    // verification step — the same authority verify-deposit.usecase.ts grants them
+    // post-creation. We walk the real FSM (pending_deposit → pending_verification →
+    // confirmed) rather than setting 'confirmed' by fiat, so a future change to
+    // TRANSITIONS can't silently desync this shortcut from the documented state machine.
+    // Customer-submitted payment fields are self-reported and unverified (no payment
+    // gateway exists), so customers are never eligible — they still go through
+    // upload-receipt → staff verify like today.
+    const isTrustedStaff = input.createdByRole === 'owner' || input.createdByRole === 'receptionist';
+    const paymentRecorded = !!input.depositMethod && input.depositMethod !== 'NONE';
+    const depositSatisfied = paymentRecorded && depositAmount >= requiredDeposit;
+    const isFullyPaidUpfront = paymentRecorded && totalCollected >= finalPrice;
+    const autoVerifyEligible = isTrustedStaff && (depositSatisfied || isFullyPaidUpfront);
+
+    let initialStatus: 'draft' | 'pending_deposit' | 'confirmed';
+    if (autoVerifyEligible) {
+      assertTransition('pending_deposit', 'pending_verification');
+      assertTransition('pending_verification', 'confirmed');
+      initialStatus = 'confirmed';
+    } else {
+      initialStatus = input.createdByRole === 'receptionist' ? 'draft' : 'pending_deposit';
+    }
+
+    const deposit_status = !paymentRecorded
+      ? 'NOT_PAID'
+      : isFullyPaidUpfront
+        ? 'FULLY_PAID'
+        : 'DEPOSIT_PAID';
 
     // ── Insert booking ─────────────────────────────────────────
     const { rows: bookingRows } = await client.query<{ id: string }>(
@@ -136,12 +165,41 @@ export async function createBooking(
     );
     const bookingId = bookingRows[0].id;
 
+    // ── Resolve payment record state ────────────────────────────
+    // Mirrors the same payment_status chain verify-deposit.usecase.ts walks;
+    // we just walk it here, atomically, because the "verification" already
+    // happened (a trusted staff member collected the money in person).
+    let paymentStatus: 'deposit_pending' | 'deposit_approved' | 'paid_in_full' = 'deposit_pending';
+    let verifiedBy:     string | null = null;
+    let verifiedAt:     Date   | null = null;
+    let balancePaidBy:  string | null = null;
+    let balancePaidAt:  Date   | null = null;
+
+    if (autoVerifyEligible) {
+      assertPaymentTransition('deposit_pending', 'deposit_approved');
+      paymentStatus = 'deposit_approved';
+      verifiedBy    = input.createdBy;
+      verifiedAt    = new Date();
+
+      if (isFullyPaidUpfront) {
+        assertPaymentTransition('deposit_approved', 'remaining_balance_pending');
+        assertPaymentTransition('remaining_balance_pending', 'paid_in_full');
+        paymentStatus = 'paid_in_full';
+        balancePaidBy = input.createdBy;
+        balancePaidAt = new Date();
+      }
+    }
+
     // ── Insert payment record ──────────────────────────────────
     await client.query(
       `INSERT INTO payments
-         (booking_id, club_id, customer_id, status, deposit_amount, total_amount)
-       VALUES ($1,$2,$3,'deposit_pending',$4,$5)`,
-      [bookingId, input.clubId, input.customerId, depositAmount, totalPrice]
+         (booking_id, club_id, customer_id, status, deposit_amount, total_amount,
+          verified_by, verified_at, balance_paid_by, balance_paid_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        bookingId, input.clubId, input.customerId, paymentStatus, depositAmount, totalPrice,
+        verifiedBy, verifiedAt, balancePaidBy, balancePaidAt,
+      ]
     );
 
     // ── Audit log ──────────────────────────────────────────────
@@ -163,6 +221,21 @@ export async function createBooking(
         status:          initialStatus,
       },
     });
+
+    if (autoVerifyEligible) {
+      await auditLog({
+        clubId:     input.clubId,
+        userId:     input.createdBy,
+        userRole:   input.createdByRole,
+        ipAddress:  input.ipAddress,
+        deviceInfo: input.deviceInfo,
+        actionType: AUDIT_ACTIONS.DEPOSIT_APPROVED,
+        entityType: 'booking',
+        entityId:   bookingId,
+        newValues:  { status: initialStatus, paymentStatus },
+        reason:     'Self-verified at creation — staff-recorded payment collected in person',
+      });
+    }
 
     return {
       id:               bookingId,
