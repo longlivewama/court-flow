@@ -24,6 +24,11 @@ export const bookingSchema = z.object({
   remainderAmount:  z.number().min(0).optional(),
   remainder_method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   remainderMethod:  z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
+  /** Customer self-reported payment – stored as the booking deposit until verified */
+  amount_paid:      z.number().min(0).optional(),
+  amountPaid:       z.number().min(0).optional(),
+  payment_method:   z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
+  paymentMethod:    z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   /** Staff/owner only – stripped before persistence when actor is customer */
   admin_notes:    z.string().optional(),
   adminNotes:     z.string().optional(),

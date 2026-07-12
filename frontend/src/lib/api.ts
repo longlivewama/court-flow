@@ -2,6 +2,7 @@
  * Axios API client with automatic token injection and refresh.
  */
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { useAuthStore } from './stores/auth.store';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -14,9 +15,17 @@ export const api = axios.create({
 // ── Request interceptor: attach access token ─────────────────
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('cf_access_token');
+    // localStorage and the persisted Zustand store can momentarily diverge
+    // after a hard refresh; fall back so authenticated calls never go out bare.
+    const token = localStorage.getItem('cf_access_token')
+      ?? useAuthStore.getState().accessToken;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // Multipart uploads must let the browser set the boundary — strip the
+    // JSON default so multer receives a parseable multipart body.
+    if (config.data instanceof FormData) {
+      config.headers.setContentType(null);
     }
   }
   return config;
@@ -59,6 +68,8 @@ api.interceptors.response.use(
           { withCredentials: true }
         );
         localStorage.setItem('cf_access_token', data.accessToken);
+        // Keep the Zustand store in sync so both token sources agree
+        useAuthStore.setState({ accessToken: data.accessToken });
         processQueue(null, data.accessToken);
         originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(originalRequest);

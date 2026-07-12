@@ -24,11 +24,12 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard/schedule', label: 'Schedule',     icon: <Calendar size={15} />,        roles: ['owner','receptionist'], group: 'Main' },
   { href: '/bookings',           label: 'Bookings',     icon: <CalendarCheck size={15} />,   roles: ['owner','receptionist'], group: 'Main' },
 
-  // Receptionist
+  // Receptionist + Owner operations
   { href: '/receptionist/checkin', label: 'Check In',    icon: <Zap size={15} />,          roles: ['receptionist'], group: 'Operations' },
-  { href: '/receptionist/verify',  label: 'Verify Deposits', icon: <CreditCard size={15} />, roles: ['receptionist'], group: 'Operations' },
+  { href: '/receptionist/verify',  label: 'Verify Deposits', icon: <CreditCard size={15} />, roles: ['receptionist', 'owner'], group: 'Operations' },
 
   // Customer
+  { href: '/dashboard/availability', label: 'Availability', icon: <LayoutDashboard size={15} />, roles: ['customer'], group: 'Main' },
   { href: '/dashboard/my-bookings', label: 'My Bookings',  icon: <CalendarCheck size={15} />, roles: ['customer'], group: 'Main' },
   { href: '/dashboard/book',        label: 'Book a Court', icon: <Calendar size={15} />,      roles: ['customer'], group: 'Main' },
 

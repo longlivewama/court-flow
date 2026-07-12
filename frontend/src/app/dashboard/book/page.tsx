@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '@/lib/api';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import {
-  Calendar, Clock, CreditCard, Search, User, ChevronDown, X,
+  Calendar, Clock, CreditCard, Search, User, ChevronDown, X, UploadCloud, Wallet,
 } from 'lucide-react';
 import { format, addMinutes } from 'date-fns';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
@@ -206,15 +206,25 @@ function CustomerPicker({ customers, loading, value, onChange, searchText, onSea
   );
 }
 
+// Customer receipt constraints (mirror backend upload-receipt.usecase)
+const RECEIPT_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
+const RECEIPT_MAX_SIZE_MB   = 10;
+
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function BookCourtPage() {
+function BookCourtForm() {
   const router                   = useRouter();
+  const searchParams             = useSearchParams();
   const { user, accessToken }    = useAuthStore();
   const isStaff                  = user?.role === 'owner' || user?.role === 'receptionist';
 
+  // Deep-link prefill from the availability grid: ?court=&date=&hour=
+  const prefillCourt = searchParams.get('court') ?? '';
+  const prefillDate  = searchParams.get('date');
+  const prefillHour  = searchParams.get('hour');
+
   // Court state
   const [courts, setCourts]               = useState<Court[]>([]);
-  const [selectedCourt, setCourt]         = useState('');
+  const [selectedCourt, setCourt]         = useState(prefillCourt);
   const [courtsLoading, setCourtsLoading] = useState(true);
 
   // Customer state (staff-only)
@@ -222,8 +232,8 @@ export default function BookCourtPage() {
   const [customerPhone, setCustomerPhone] = useState('');
 
   // Schedule state
-  const [date, setDate]       = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [hour, setHour]       = useState(9);
+  const [date, setDate]       = useState(prefillDate ?? format(new Date(), 'yyyy-MM-dd'));
+  const [hour, setHour]       = useState(prefillHour !== null ? parseInt(prefillHour, 10) || 0 : 9);
   const [minute, setMinute]   = useState(0);
   const [duration, setDuration] = useState(60);
 
@@ -232,6 +242,11 @@ export default function BookCourtPage() {
   const [depositMethod, setDepositMethod] = useState('NONE');
   const [remainderAmount, setRemainderAmount] = useState(0);
   const [remainderMethod, setRemainderMethod] = useState('NONE');
+
+  // Payment state (customer-only): self-reported payment + mandatory receipt
+  const [amountPaid, setAmountPaid]     = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('INSTAPAY');
+  const [receiptFile, setReceiptFile]   = useState<File | null>(null);
 
   // UI state
   const [loading, setLoading]                   = useState(false);
@@ -305,6 +320,24 @@ export default function BookCourtPage() {
   const startLocal = toZonedTime(startDateTime, TIMEZONE);
   const endLocal   = toZonedTime(endDateTime,   TIMEZONE);
 
+  // ── Receipt file selection (customer) ─────────────────────────
+  function handleReceiptChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const selected = e.target.files?.[0] ?? null;
+    setError('');
+    if (!selected) { setReceiptFile(null); return; }
+    if (!RECEIPT_ALLOWED_TYPES.includes(selected.type)) {
+      setReceiptFile(null);
+      setError('Invalid receipt file. Please upload a JPEG, PNG, or PDF.');
+      return;
+    }
+    if (selected.size > RECEIPT_MAX_SIZE_MB * 1024 * 1024) {
+      setReceiptFile(null);
+      setError(`Receipt file too large. Maximum size is ${RECEIPT_MAX_SIZE_MB} MB.`);
+      return;
+    }
+    setReceiptFile(selected);
+  }
+
   // ── Submit ────────────────────────────────────────────────────
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -315,6 +348,20 @@ export default function BookCourtPage() {
 
     if (isStaff && (depositAmount + remainderAmount > totalPrice)) {
       return setError(`Total paid cannot exceed the total price of EGP ${totalPrice.toFixed(2)}`);
+    }
+
+    // Customers must declare their payment and attach the transfer receipt
+    if (!isStaff) {
+      const paid = Number(amountPaid);
+      if (!amountPaid || Number.isNaN(paid) || paid <= 0) {
+        return setError('Please enter the amount you paid upfront');
+      }
+      if (paid > totalPrice) {
+        return setError(`Amount paid cannot exceed the total price of EGP ${totalPrice.toFixed(2)}`);
+      }
+      if (!receiptFile) {
+        return setError('Please attach your payment receipt screenshot — it is required');
+      }
     }
 
     setLoading(true);
@@ -337,7 +384,10 @@ export default function BookCourtPage() {
           deposit_method:   depositMethod,
           remainder_amount: remainderAmount,
           remainder_method: remainderMethod,
-        } : {})
+        } : {
+          amount_paid:      Number(amountPaid),
+          payment_method:   paymentMethod,
+        })
       };
 
       // Staff must include customer details; customers rely on server-side JWT identity
@@ -345,7 +395,25 @@ export default function BookCourtPage() {
         ? bookingSchema.parse({ ...basePayload, customerName, customerPhone })
         : bookingSchema.parse(basePayload);
 
-      await api.post('/bookings', payload);
+      const { data: created } = await api.post('/bookings', payload);
+
+      // Customers: immediately attach the mandatory payment receipt so the
+      // booking moves to 'pending_verification' for staff review.
+      if (!isStaff && receiptFile && created?.id) {
+        try {
+          const formData = new FormData();
+          formData.append('receipt', receiptFile);
+          await api.post(`/bookings/${created.id}/receipt`, formData);
+        } catch {
+          // Booking exists but the receipt didn't stick — send the customer to
+          // the booking page where the upload can be retried.
+          setOptimisticSuccess(false);
+          setLoading(false);
+          setError('Booking created, but the receipt upload failed. Redirecting you to the booking page to retry…');
+          setTimeout(() => router.push(`/dashboard/bookings/${created.id}`), 1800);
+          return;
+        }
+      }
 
       router.refresh();
       router.push(isStaff ? '/bookings' : '/dashboard/my-bookings');
@@ -586,6 +654,85 @@ export default function BookCourtPage() {
                 </div>
               )}
 
+              {/* ── Payment & Receipt (Customer Only) ──────────── */}
+              {!isStaff && selectedCourtObj && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                  className="card"
+                  style={{ padding: 16, borderLeft: '4px solid var(--accent)' }}
+                >
+                  <h3 style={{ fontSize: 14, fontWeight: 600, margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Wallet size={14} /> Your Payment
+                  </h3>
+                  <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: '0 0 12px 0' }}>
+                    Tell us how much you transferred and attach the receipt — staff will
+                    verify it and confirm your booking.
+                  </p>
+
+                  <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+                    <div style={{ flex: 1 }}>
+                      <label className="label" htmlFor="amount-paid">
+                        Amount Paid (EGP) <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <input
+                        id="amount-paid"
+                        className="input"
+                        type="number"
+                        min="1"
+                        step="0.01"
+                        placeholder={`e.g. ${(totalPrice / 2).toFixed(0)}`}
+                        value={amountPaid}
+                        onChange={(e) => setAmountPaid(e.target.value)}
+                        required={!isStaff}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label className="label" htmlFor="payment-method">
+                        Payment Method <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <select
+                        id="payment-method"
+                        className="input"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                        required={!isStaff}
+                      >
+                        <option value="INSTAPAY">⚡ InstaPay</option>
+                        <option value="VODAFONE_CASH">📱 Vodafone Cash</option>
+                        <option value="CASH">💵 Cash</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label
+                    htmlFor="receipt-file"
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      gap: 6, padding: '20px 14px', borderRadius: 10,
+                      border: `1.5px dashed ${receiptFile ? 'var(--accent)' : 'var(--border)'}`,
+                      background: 'var(--bg-secondary)', cursor: 'pointer', textAlign: 'center',
+                    }}
+                  >
+                    <UploadCloud size={20} style={{ color: receiptFile ? 'var(--accent)' : 'var(--text-tertiary)' }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {receiptFile ? receiptFile.name : 'Attach payment receipt (required)'}
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                      Transfer screenshot · JPEG, PNG, or PDF · up to {RECEIPT_MAX_SIZE_MB}MB
+                    </span>
+                    <input
+                      id="receipt-file"
+                      type="file"
+                      accept="image/jpeg,image/png,application/pdf"
+                      onChange={handleReceiptChange}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                </motion.div>
+              )}
+
               {/* ── Summary ────────────────────────────────────── */}
               {selectedCourtObj && (
                 <motion.div
@@ -665,5 +812,14 @@ export default function BookCourtPage() {
         </div>
       </motion.div>
     </div>
+  );
+}
+
+// useSearchParams requires a Suspense boundary in the App Router
+export default function BookCourtPage() {
+  return (
+    <Suspense fallback={<div className="skeleton" style={{ height: 400, borderRadius: 12 }} />}>
+      <BookCourtForm />
+    </Suspense>
   );
 }

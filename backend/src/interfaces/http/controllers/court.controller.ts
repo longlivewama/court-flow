@@ -159,6 +159,58 @@ export async function getCourtAvailability(req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 }
 
+// ── GET /api/courts/availability-grid?date=2026-07-10 ────────
+// Customer-safe availability overview for ALL active courts over the
+// operational business day (noon → 06:00 AM next day, Cairo — same window
+// as getDailySchedule). Returns occupied intervals only, with NO customer
+// PII, so it is safe to expose to any authenticated role.
+export async function getAvailabilityGrid(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const date = (req.query.date as string) ?? new Date().toLocaleDateString('sv', { timeZone: TIMEZONE });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new ValidationError('date must be formatted YYYY-MM-DD');
+    }
+
+    const windowStart = fromZonedTime(`${date}T12:00:00`, TIMEZONE);
+    const [y, m, d]   = date.split('-').map(Number);
+    const nextDateStr = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+    const windowEnd   = fromZonedTime(`${nextDateStr}T06:00:00`, TIMEZONE);
+
+    const [courtsResult, bookingsResult, blockedResult] = await Promise.all([
+      db.query(
+        `SELECT id, name, number AS court_number, price_per_slot AS price_per_hour
+         FROM courts WHERE club_id = $1 AND is_active = true ORDER BY number`,
+        [CLUB_ID]
+      ),
+      db.query(
+        `SELECT court_id, start_time, end_time
+         FROM bookings
+         WHERE club_id = $1
+           AND status IN ('confirmed','checked_in','pending_verification','pending_deposit','draft')
+           AND start_time < $3 AND end_time > $2
+         ORDER BY start_time`,
+        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+      ),
+      db.query(
+        `SELECT court_id, type, title, start_at, end_at
+         FROM blocked_periods
+         WHERE club_id = $1 AND start_at < $3 AND end_at > $2
+         ORDER BY start_at`,
+        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+      ),
+    ]);
+
+    res.json({
+      date,
+      windowStart:    windowStart.toISOString(),
+      windowEnd:      windowEnd.toISOString(),
+      courts:         courtsResult.rows,
+      bookedSlots:    bookingsResult.rows,
+      blockedPeriods: blockedResult.rows,
+    });
+  } catch (err) { next(err); }
+}
+
 // ── GET /api/dashboard/schedule?date=2026-07-10 ──────────────
 // The operational business day runs from 12:00 PM (noon) on the
 // requested date to 06:00 AM the FOLLOWING calendar day (overnight
