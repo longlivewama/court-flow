@@ -107,13 +107,17 @@ export const emailService = {
     to: string; firstName: string; bookingId: string;
     startTime: Date; depositAmount: number; totalPrice: number;
   }): Promise<void> {
+    // pg returns NUMERIC/DECIMAL columns as strings to avoid precision loss,
+    // so depositAmount/totalPrice may be strings at runtime despite the type.
+    const depositAmount = Number(opts.depositAmount);
+    const totalPrice    = Number(opts.totalPrice);
     const body = `
       <p>Hi ${opts.firstName}, your booking is confirmed!</p>
       <div style="margin:20px 0;">
         <div class="detail-row"><span class="detail-label">Booking ID</span><span class="detail-value">${opts.bookingId.slice(0,8).toUpperCase()}</span></div>
         <div class="detail-row"><span class="detail-label">Date & Time</span><span class="detail-value">${formatDateTime(opts.startTime)}</span></div>
-        <div class="detail-row"><span class="detail-label">Deposit Paid</span><span class="detail-value">EGP ${opts.depositAmount.toFixed(2)}</span></div>
-        <div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-value">EGP ${(opts.totalPrice - opts.depositAmount).toFixed(2)}</span></div>
+        <div class="detail-row"><span class="detail-label">Deposit Paid</span><span class="detail-value">EGP ${depositAmount.toFixed(2)}</span></div>
+        <div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-value">EGP ${(totalPrice - depositAmount).toFixed(2)}</span></div>
       </div>
       <p>Please arrive on time. The remaining balance is due at the club.</p>`;
     await sendWithRetry({
