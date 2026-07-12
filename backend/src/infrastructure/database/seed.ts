@@ -1,5 +1,43 @@
 import 'dotenv/config';
 import { Pool } from 'pg';
+import { v4 as uuidv4 } from 'uuid';
+import { db } from './client';
+import { hashPassword } from '../auth/argon2.service';
+import { logger } from '../../shared/logger';
+
+const DEFAULT_OWNER_EMAIL    = 'admin@courtflow.com';
+const DEFAULT_OWNER_PASSWORD = 'Admin@123456';
+
+/**
+ * Dev-only convenience: ensures a default owner account exists so local
+ * testing doesn't require registering + manually patching roles.
+ * Called from index.ts on bootstrap; never runs in production.
+ */
+export async function seedDefaultOwner(): Promise<void> {
+  if (process.env.NODE_ENV === 'production') return;
+
+  const clubId = process.env.CLUB_ID;
+  if (!clubId) return;
+
+  const { rows: existing } = await db.query(
+    `SELECT id FROM users WHERE club_id=$1 AND email=$2`,
+    [clubId, DEFAULT_OWNER_EMAIL]
+  );
+  if (existing.length) return;
+
+  const passwordHash = await hashPassword(DEFAULT_OWNER_PASSWORD);
+
+  await db.query(
+    `INSERT INTO users (id,club_id,email,password_hash,role,first_name,last_name,email_verified)
+     VALUES ($1,$2,$3,$4,'owner',$5,$6,TRUE)`,
+    [uuidv4(), clubId, DEFAULT_OWNER_EMAIL, passwordHash, 'Default', 'Owner']
+  );
+
+  logger.warn(
+    `[seed] Created default dev owner account — email: ${DEFAULT_OWNER_EMAIL}, password: ${DEFAULT_OWNER_PASSWORD}. ` +
+    `This only runs outside NODE_ENV=production.`
+  );
+}
 
 function resolveSsl(connectionString?: string) {
   const sslMode = process.env.PGSSLMODE?.toLowerCase();
@@ -43,7 +81,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
