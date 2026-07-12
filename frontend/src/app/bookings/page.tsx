@@ -147,24 +147,24 @@ export default function BookingsPage() {
                   </td>
                   <td>
                     <div style={{ fontWeight: 500, color: 'var(--text-primary)', fontSize: 13 }}>
-                      {b.first_name} {b.last_name}
+                      {b.first_name ?? 'Unknown'} {b.last_name ?? 'User'}
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{b.customer_email}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{b.customer_email || '—'}</div>
                   </td>
-                  <td style={{ fontSize: 13 }}>Court {b.court_number} · {b.court_name}</td>
+                  <td style={{ fontSize: 13 }}>Court {b.court_number ?? '?'} · {b.court_name ?? 'N/A'}</td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                     {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'dd/MM HH:mm')}
                   </td>
                   <td style={{ fontSize: 13 }}>{b.duration_minutes}m</td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500 }}>
-                    EGP {Number(b.total_price).toFixed(2)}
+                    EGP {Number(b.total_price ?? 0).toFixed(2)}
                   </td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
-                    EGP {Number(b.deposit_amount).toFixed(2)}
+                    EGP {Number(b.deposit_amount ?? 0).toFixed(2)}
                   </td>
                   <td><StateChip status={b.status} size="sm" /></td>
                   <td style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                    {b.payment_status?.replace(/_/g, ' ')}
+                    {b.payment_status?.replace(/_/g, ' ') ?? '—'}
                   </td>
                 </motion.tr>
               ))

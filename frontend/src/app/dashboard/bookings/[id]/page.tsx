@@ -801,6 +801,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
   const [booking, setBooking] = useState<BookingDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
+  const [notFound, setNotFound] = useState(false);
 
   const isStaff = user?.role === 'owner' || user?.role === 'receptionist';
 
@@ -808,14 +809,30 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
     try {
       const { data } = await api.get(`/bookings/${id}`);
       setBooking(data.data ?? data);
+      setNotFound(false);
     } catch (err: any) {
-      setError(err?.response?.data?.message ?? 'Failed to load booking details.');
+      const status = err?.response?.status;
+      if (status === 404) {
+        setError('This booking has been deleted or no longer exists.');
+        setNotFound(true);
+      } else {
+        setError(err?.response?.data?.message ?? 'Failed to load booking details.');
+      }
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => { loadBooking(); }, [id]);
+
+  // Auto-redirect to bookings list when the booking is not found
+  useEffect(() => {
+    if (!notFound) return;
+    const timer = setTimeout(() => {
+      router.push('/bookings');
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [notFound, router]);
 
   function refreshBooking() {
     setLoading(true);
@@ -848,16 +865,29 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <div className="page-header">
           <div>
             <h1 className="page-title">Booking Details</h1>
-            <p className="page-subtitle">Could not retrieve booking information</p>
+            <p className="page-subtitle">{notFound ? 'Booking not found' : 'Could not retrieve booking information'}</p>
           </div>
-          <button className="btn btn-ghost" onClick={() => router.back()}>
-            <ArrowLeft size={16} /> Back
+          <button className="btn btn-ghost" onClick={() => router.push('/bookings')}>
+            <ArrowLeft size={16} /> Back to Bookings
           </button>
         </div>
         <div className="card" style={{ padding: 40, textAlign: 'center' }}>
-          <AlertCircle size={48} style={{ color: 'var(--color-error, #ef4444)', margin: '0 auto 16px' }} />
+          <AlertCircle size={48} style={{ color: notFound ? 'var(--color-warning, #eab308)' : 'var(--color-error, #ef4444)', margin: '0 auto 16px' }} />
           <h2 style={{ fontSize: 18, marginBottom: 8 }}>{error || 'Booking not found'}</h2>
-          <p style={{ color: 'var(--text-secondary)' }}>The booking ID you provided does not exist or you do not have permission to view it.</p>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: 20 }}>
+            {notFound
+              ? 'This booking may have been deleted or the ID is invalid. You will be redirected shortly.'
+              : 'The booking ID you provided does not exist or you do not have permission to view it.'}
+          </p>
+          {notFound && (
+            <button
+              className="btn btn-primary"
+              onClick={() => router.push('/bookings')}
+              style={{ marginTop: 8 }}
+            >
+              Go to Bookings Now
+            </button>
+          )}
         </div>
       </div>
     );

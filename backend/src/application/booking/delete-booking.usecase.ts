@@ -1,9 +1,12 @@
 /**
- * Delete Booking Use Case (Owner-only, destructive)
+ * Delete Booking Use Case (Owner-only, soft-delete)
  *
- * Permanently removes a booking and its dependent receipt/payment rows inside
- * a single transaction, after persisting a full pre-deletion snapshot to the
- * append-only audit log (WHO / WHEN / WHERE / WHAT + mandatory reason).
+ * Marks a booking as deleted (soft-delete) by setting deleted_at, deleted_by,
+ * and deletion_reason inside a single transaction, after persisting a full
+ * pre-deletion snapshot to the append-only audit log.
+ *
+ * The booking row and its dependent receipts/payments are preserved for
+ * historical audit and financial reconciliation purposes.
  *
  * Guardrail: bookings referenced by any refund record cannot be deleted —
  * destroying that link would corrupt financial reconciliation.
@@ -27,15 +30,15 @@ export async function deleteBooking(input: DeleteBookingInput): Promise<void> {
     // ── Lock the booking and capture the full pre-deletion snapshot ──
     const { rows } = await client.query(
       `SELECT b.*,
-              c.name   AS court_name,
-              c.number AS court_number,
-              u.first_name,
-              u.last_name,
-              u.email  AS customer_email
+              COALESCE(c.name, 'Deleted Court') AS court_name,
+              COALESCE(c.number, 0)              AS court_number,
+              COALESCE(u.first_name, 'Unknown')  AS first_name,
+              COALESCE(u.last_name, 'User')      AS last_name,
+              COALESCE(u.email, '')               AS customer_email
        FROM bookings b
-       JOIN courts c ON c.id = b.court_id
-       JOIN users  u ON u.id = b.customer_id
-       WHERE b.id = $1 AND b.club_id = $2
+       LEFT JOIN courts c ON c.id = b.court_id
+       LEFT JOIN users  u ON u.id = b.customer_id
+       WHERE b.id = $1 AND b.club_id = $2 AND b.deleted_at IS NULL
        FOR UPDATE OF b`,
       [input.bookingId, input.clubId]
     );
@@ -52,7 +55,7 @@ export async function deleteBooking(input: DeleteBookingInput): Promise<void> {
       throw new ConflictError('Cannot delete a booking with existing refund records');
     }
 
-    // ── Persist the audit record before the row is destroyed ─────────
+    // ── Persist the audit record before the row is marked deleted ────
     // Strict + same transaction: if this INSERT fails, the whole deletion
     // rolls back — a permanent deletion must never happen unaudited.
     await auditLogStrict(client, {
@@ -68,9 +71,17 @@ export async function deleteBooking(input: DeleteBookingInput): Promise<void> {
       reason:     input.reason,
     });
 
-    // ── Explicit ordered deletion: receipts → payments → booking ─────
-    await client.query(`DELETE FROM receipts WHERE booking_id = $1`, [input.bookingId]);
-    await client.query(`DELETE FROM payments WHERE booking_id = $1`, [input.bookingId]);
-    await client.query(`DELETE FROM bookings WHERE id = $1`, [input.bookingId]);
+    // ── Soft-delete: mark as deleted instead of destroying the row ───
+    await client.query(
+      `UPDATE bookings
+         SET deleted_at      = NOW(),
+             deleted_by      = $2,
+             deletion_reason = $3,
+             status          = 'cancelled',
+             updated_at      = NOW()
+       WHERE id = $1`,
+      [input.bookingId, input.deletedBy, input.reason]
+    );
   });
 }
+
