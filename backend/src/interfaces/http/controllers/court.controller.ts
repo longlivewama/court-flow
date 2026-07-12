@@ -424,7 +424,7 @@ async function assertBlockedPeriodFree(
     `SELECT id FROM bookings
       WHERE club_id = $1::uuid
         AND deleted_at IS NULL
-        AND status IN ('confirmed', 'checked_in', 'pending_verification', 'pending_deposit')
+        AND status IN ('draft', 'pending_deposit', 'pending_verification', 'confirmed', 'checked_in')
         AND ($2::uuid IS NULL OR court_id = $2::uuid)
         AND start_time < $4::timestamptz
         AND end_time   > $3::timestamptz
