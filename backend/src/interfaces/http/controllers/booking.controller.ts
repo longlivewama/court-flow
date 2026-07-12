@@ -48,7 +48,7 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const params: unknown[] = [CLUB_ID];
-    const conditions: string[] = ['b.club_id = $1'];
+    const conditions: string[] = ['b.club_id = $1', 'b.deleted_at IS NULL'];
 
     // Customers only see their own bookings
     if (role === 'customer') {
@@ -68,12 +68,16 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
     params.push(parseInt(limit), offset);
 
     const { rows } = await db.query(
-      `SELECT b.*, c.name AS court_name, c.number AS court_number,
-              u.first_name, u.last_name, u.email AS customer_email,
+      `SELECT b.*,
+              COALESCE(c.name, 'Deleted Court') AS court_name,
+              COALESCE(c.number, 0) AS court_number,
+              COALESCE(u.first_name, 'Unknown') AS first_name,
+              COALESCE(u.last_name, 'User') AS last_name,
+              COALESCE(u.email, '') AS customer_email,
               p.status AS payment_status, p.deposit_amount, p.total_amount
        FROM bookings b
-       JOIN courts c ON c.id = b.court_id
-       JOIN users  u ON u.id = b.customer_id
+       LEFT JOIN courts c ON c.id = b.court_id
+       LEFT JOIN users  u ON u.id = b.customer_id
        LEFT JOIN payments p ON p.booking_id = b.id
        WHERE ${where}
        ORDER BY b.start_time DESC
@@ -272,12 +276,16 @@ export async function getBooking(req: Request, res: Response, next: NextFunction
     const { role, sub: userId } = req.user!;
 
     const { rows } = await db.query(
-      `SELECT b.*, c.name AS court_name, c.number AS court_number,
-              u.first_name, u.last_name, u.email AS customer_email
+      `SELECT b.*,
+              COALESCE(c.name, 'Deleted Court') AS court_name,
+              COALESCE(c.number, 0) AS court_number,
+              COALESCE(u.first_name, 'Unknown') AS first_name,
+              COALESCE(u.last_name, 'User') AS last_name,
+              COALESCE(u.email, '') AS customer_email
        FROM bookings b
-       JOIN courts c ON c.id = b.court_id
-       JOIN users  u ON u.id = b.customer_id
-       WHERE b.id = $1 AND b.club_id = $2`,
+       LEFT JOIN courts c ON c.id = b.court_id
+       LEFT JOIN users  u ON u.id = b.customer_id
+       WHERE b.id = $1 AND b.club_id = $2 AND b.deleted_at IS NULL`,
       [id, CLUB_ID]
     );
 

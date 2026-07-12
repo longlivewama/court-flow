@@ -25,8 +25,8 @@ export async function listAuditLogs(req: Request, res: Response, next: NextFunct
     );
 
     const { rows: countRows } = await db.query(
-      `SELECT COUNT(*) AS total FROM audit_logs WHERE ${conditions.slice(0, -2).join(' AND ')}`,
-      params.slice(0, -2)
+      `SELECT COUNT(*) AS total FROM audit_logs WHERE ${conditions.join(' AND ')}`,
+      params.slice(0, params.length - 2)
     );
 
     res.json({ data: rows, total: parseInt(countRows[0].total), page: parseInt(page), limit: parseInt(limit) });
