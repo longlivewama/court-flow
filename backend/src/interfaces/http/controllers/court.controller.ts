@@ -2,11 +2,12 @@
  * Court Controller – Court CRUD, availability checking, working hours, blocked periods, daily schedule.
  */
 import { Request, Response, NextFunction } from 'express';
+import { PoolClient } from 'pg';
 import { db } from '../../../infrastructure/database/client';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../../../infrastructure/cache/redis.client';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
-import { NotFoundError, ValidationError } from '../../../shared/errors';
+import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
 import { addMinutes, startOfDay, endOfDay } from 'date-fns';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 
@@ -389,6 +390,71 @@ const DB_TO_REASON_TYPE: Record<string, ReasonType> = {
   holiday:       'ADMIN_CLOSED',
 };
 
+/**
+ * Reject a blocked period that would overlap an existing reservation on the same
+ * court, mirroring the guard `validateBookingSlot` applies in the other direction
+ * (a new booking cannot land on a block). Together they make the two schedule
+ * writers symmetric, so neither can create a court double-booking.
+ *
+ * Overlap is the half-open interval test: existing.start < new.end AND
+ * existing.end > new.start.
+ *
+ * Court scoping:
+ *   • A court-specific block (courtId set) conflicts with bookings on that court,
+ *     and with blocks on that court OR club-wide blocks (court_id IS NULL).
+ *   • A club-wide block (courtId = null) conflicts with ANY booking or block in
+ *     the club, on any court.
+ * The `$2::uuid IS NULL OR …` clauses collapse to "match everything" when the new
+ * block is club-wide, so $2 stays referenced and Postgres never sees a stray bind.
+ */
+async function assertBlockedPeriodFree(
+  client: PoolClient,
+  clubId: string,
+  courtId: string | null,
+  startAt: Date,
+  endAt: Date,
+): Promise<void> {
+  const startISO = startAt.toISOString();
+  const endISO   = endAt.toISOString();
+
+  // ── Conflicting active customer bookings ─────────────────────
+  // Soft-deleted bookings carry status 'cancelled', so both the status filter and
+  // the explicit deleted_at guard exclude them.
+  const { rows: bookingRows } = await client.query(
+    `SELECT id FROM bookings
+      WHERE club_id = $1::uuid
+        AND deleted_at IS NULL
+        AND status IN ('confirmed', 'checked_in', 'pending_verification', 'pending_deposit')
+        AND ($2::uuid IS NULL OR court_id = $2::uuid)
+        AND start_time < $4::timestamptz
+        AND end_time   > $3::timestamptz
+      LIMIT 1`,
+    [clubId, courtId, startISO, endISO],
+  );
+  if (bookingRows.length > 0) {
+    throw new ConflictError(
+      'This time slot conflicts with an existing customer booking on this court.',
+    );
+  }
+
+  // ── Conflicting existing blocks (maintenance / tournament / etc.) ──
+  const { rows: blockRows } = await client.query<{ title: string; type: string }>(
+    `SELECT title, type FROM blocked_periods
+      WHERE club_id = $1::uuid
+        AND ($2::uuid IS NULL OR court_id = $2::uuid OR court_id IS NULL)
+        AND start_at < $4::timestamptz
+        AND end_at   > $3::timestamptz
+      LIMIT 1`,
+    [clubId, courtId, startISO, endISO],
+  );
+  if (blockRows.length > 0) {
+    const b = blockRows[0];
+    throw new ConflictError(
+      `This time slot conflicts with a scheduled ${b.type} block on this court: "${b.title}".`,
+    );
+  }
+}
+
 export async function createBlockedPeriod(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { z } = await import('zod');
@@ -415,16 +481,34 @@ export async function createBlockedPeriod(req: Request, res: Response, next: Nex
     // by business hours – the operational window check has been removed so that
     // Tournaments, Maintenance windows, etc. can span any hours of the day.
 
-    const { rows } = await db.query(
-      `INSERT INTO blocked_periods (club_id, court_id, type, title, start_at, end_at, recurring, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [CLUB_ID, body.courtId ?? null, DB_REASON_MAP[reasonType], body.title, body.startAt, body.endAt, body.recurring ?? false, req.user!.sub]
-    );
+    const courtId = body.courtId ?? null;
 
-    await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
-      actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_CREATED,
-      entityType: 'blocked_period', entityId: rows[0].id, newValues: rows[0]
+    // Lock + validate + insert atomically so a booking can't slip into the same
+    // slot between the overlap check and the insert. The FOR UPDATE below locks the
+    // same court row(s) createBooking locks, serializing the two schedule writers.
+    const rows = await withTransaction(async (client) => {
+      await client.query(
+        `SELECT id FROM courts
+          WHERE club_id = $1::uuid AND ($2::uuid IS NULL OR id = $2::uuid)
+          FOR UPDATE`,
+        [CLUB_ID, courtId],
+      );
+
+      await assertBlockedPeriodFree(client, CLUB_ID, courtId, startAt, endAt);
+
+      const { rows } = await client.query(
+        `INSERT INTO blocked_periods (club_id, court_id, type, title, start_at, end_at, recurring, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [CLUB_ID, courtId, DB_REASON_MAP[reasonType], body.title, body.startAt, body.endAt, body.recurring ?? false, req.user!.sub]
+      );
+
+      await auditLog({
+        clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+        actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_CREATED,
+        entityType: 'blocked_period', entityId: rows[0].id, newValues: rows[0]
+      });
+
+      return rows;
     });
 
     // Return the row with reason_type normalised back to the frontend uppercase

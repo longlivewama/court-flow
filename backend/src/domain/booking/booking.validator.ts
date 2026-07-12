@@ -109,6 +109,7 @@ export async function validateBookingSlot(
   const { rows: conflictRows } = await client.query(
     `SELECT id FROM bookings
      WHERE court_id = $1::uuid
+       AND deleted_at IS NULL
        AND status IN ('confirmed', 'checked_in', 'pending_verification', 'pending_deposit')
        AND start_time < $3::timestamptz
        AND end_time   > $2::timestamptz
