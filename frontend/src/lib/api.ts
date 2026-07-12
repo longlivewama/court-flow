@@ -47,12 +47,22 @@ api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const status = error.response?.status;
 
-    if ((error.response?.status === 401 || error.response?.status === 403) && !originalRequest._retry) {
+    // Only 401 is refreshable. A 401 means the access token is missing/expired/
+    // invalid, which a refresh can fix. A 403 means the session is valid but the
+    // role is not permitted for this route (e.g. a non-staff user hitting
+    // /bookings/:id/verify) — refreshing the token cannot change the role, so
+    // retrying would spin forever. Reject 403s immediately and let the caller
+    // surface the permission error.
+    if (status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
-        return new Promise((resolve, reject) => {
+        return new Promise<string>((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then((token) => {
+          // Mark the queued request as retried too, otherwise a persistently
+          // failing 401 would re-enter the refresh flow and loop indefinitely.
+          originalRequest._retry = true;
           originalRequest.headers.Authorization = `Bearer ${token}`;
           return api(originalRequest);
         });
@@ -74,10 +84,16 @@ api.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(originalRequest);
       } catch (refreshError) {
+        // Refresh failed → the session is truly dead. Clear all client auth state
+        // and return to a clean login page.
         processQueue(refreshError, null);
         localStorage.removeItem('cf_access_token');
         localStorage.removeItem('cf_user');
-        window.location.href = '/login';
+        useAuthStore.setState({ accessToken: null });
+        // Guard against a redirect loop when the failing call originated on /login.
+        if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
+        }
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
