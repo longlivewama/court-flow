@@ -106,7 +106,7 @@ export function registerRoutes(app: Express): void {
   settings.patch('/',                    requireRole('owner'), courtCtrl.updateClubSettings);
   // We need to un-protect settings root for these specific routes if settings router requires owner, or just add the roles
   settings.get('/working-hours',         requireRole('customer', 'receptionist', 'owner', 'admin'), courtCtrl.getWorkingHours);
-  settings.put('/working-hours',         requireRole('customer', 'receptionist', 'owner', 'admin'), courtCtrl.upsertWorkingHours);
+  settings.put('/working-hours',         requireRole('owner', 'admin'), courtCtrl.upsertWorkingHours);
   app.use('/api/settings', settings);
 
   // ── Dashboard data endpoints ─────────────────────────────────

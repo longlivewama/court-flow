@@ -16,6 +16,12 @@ import { seedDefaultOwner } from './infrastructure/database/seed';
 
 const app = express();
 
+// ── Proxy trust ───────────────────────────────────────────────
+// Behind a reverse proxy (nginx, load balancer), the client IP arrives in
+// X-Forwarded-For. Trust the first hop so express-rate-limit keys on the real
+// client IP instead of collapsing every request onto the proxy's single IP.
+app.set('trust proxy', 1);
+
 // ── Security headers ──────────────────────────────────────────
 app.use(
   helmet({
