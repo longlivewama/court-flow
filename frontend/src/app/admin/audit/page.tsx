@@ -1,3 +1,4 @@
+
 'use client';
 
 /**
@@ -11,49 +12,49 @@ import { api } from '@/lib/api';
 import { format } from 'date-fns';
 
 interface AuditEntry {
-  id:              number;
-  timestamp_utc:   string;
-  user_id:         string;
-  user_role:       string;
-  ip_address:      string;
-  action_type:     string;
-  entity_type:     string;
-  entity_id:       string;
+  id: number;
+  timestamp_utc: string;
+  user_id: string;
+  user_role: string;
+  ip_address: string;
+  action_type: string;
+  entity_type: string;
+  entity_id: string;
   previous_values: Record<string, unknown> | null;
-  new_values:      Record<string, unknown> | null;
-  reason:          string | null;
+  new_values: Record<string, unknown> | null;
+  reason: string | null;
 }
 
 const ACTION_COLORS: Record<string, string> = {
-  USER_LOGIN:         'var(--info)',
-  USER_LOGIN_FAILED:  'var(--error)',
-  BOOKING_CREATED:    'var(--success)',
-  BOOKING_CANCELLED:  'var(--error)',
-  BOOKING_DELETED:    'var(--error)',
-  BOOKING_NO_SHOW:    'var(--error)',
-  DEPOSIT_APPROVED:   'var(--success)',
-  DEPOSIT_REJECTED:   'var(--error)',
+  USER_LOGIN: 'var(--info)',
+  USER_LOGIN_FAILED: 'var(--error)',
+  BOOKING_CREATED: 'var(--success)',
+  BOOKING_CANCELLED: 'var(--error)',
+  BOOKING_DELETED: 'var(--error)',
+  BOOKING_NO_SHOW: 'var(--error)',
+  DEPOSIT_APPROVED: 'var(--success)',
+  DEPOSIT_REJECTED: 'var(--error)',
   BOOKING_CHECKED_IN: 'var(--info)',
-  REFUND_APPROVED:    'var(--warning)',
+  REFUND_APPROVED: 'var(--warning)',
 };
 
 export default function AuditPage() {
-  const [logs, setLogs]         = useState<AuditEntry[]>([]);
-  const [loading, setLoading]   = useState(true);
+  const [logs, setLogs] = useState<AuditEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<number | null>(null);
-  const [search, setSearch]     = useState('');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     api.get('/audit?limit=100').then(({ data }) => {
       setLogs(data.data ?? data);
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => { }).finally(() => setLoading(false));
   }, []);
 
   const filtered = search
     ? logs.filter((l) =>
-        [l.action_type, l.entity_type, l.entity_id, l.user_role, l.ip_address]
-          .join(' ').toLowerCase().includes(search.toLowerCase())
-      )
+      [l.action_type, l.entity_type, l.entity_id, l.user_role, l.ip_address]
+        .join(' ').toLowerCase().includes(search.toLowerCase())
+    )
     : logs;
 
   return (

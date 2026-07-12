@@ -472,6 +472,7 @@ export default function SchedulePage() {
   const [selected,     setSelected]     = useState<Booking | null>(null);
   const [showModal,    setShowModal]    = useState(false);
   const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState('');
 
   const dateStr   = format(toZonedTime(selectedDate, TIMEZONE), 'yyyy-MM-dd');
   const dayOfWeek = toZonedTime(selectedDate, TIMEZONE).getDay();
@@ -491,6 +492,7 @@ export default function SchedulePage() {
   const load = useCallback(() => {
     let cancelled = false;
     setLoading(true);
+    setError('');
 
     Promise.all([
       api.get('/courts'),
@@ -516,7 +518,11 @@ export default function SchedulePage() {
       }
 
       setWorkingHours(Array.isArray(whRes.data) ? whRes.data : []);
-    }).catch(() => {}).finally(() => {
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to load the schedule. Please try again.');
+    }).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
@@ -631,6 +637,17 @@ export default function SchedulePage() {
           <span>Normal Booking</span>
         </div>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* ── Grid Container ── */}
       <div style={{

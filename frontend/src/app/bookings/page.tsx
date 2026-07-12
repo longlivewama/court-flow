@@ -32,6 +32,7 @@ const STATUS_FILTER_OPTIONS = [
 export default function BookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
   const [search, setSearch]     = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
@@ -39,12 +40,16 @@ export default function BookingsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
       const params = new URLSearchParams({ page: String(page), limit: '25' });
       if (statusFilter) params.set('status', statusFilter);
       const { data } = await api.get(`/bookings?${params}`);
       setBookings(data.data ?? data);
-    } catch {} finally {
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to load bookings.');
+    } finally {
       setLoading(false);
     }
   }, [page, statusFilter]);
@@ -96,6 +101,17 @@ export default function BookingsPage() {
           ))}
         </select>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* Table */}
       <motion.div className="table-wrap" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>

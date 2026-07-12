@@ -8,6 +8,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Save, Settings, Clock, CreditCard, Phone, Building2 } from 'lucide-react';
+import { ZodError } from 'zod';
 import { api } from '@/lib/api';
 import { workingHoursSchema } from '@/lib/schemas';
 
@@ -59,6 +60,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
+  const [error, setError]     = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -102,6 +104,7 @@ export default function SettingsPage() {
 
   async function handleSave() {
     setSaving(true);
+    setError('');
     try {
       const validatedHours = workingHoursSchema.parse({ hours: workingHours });
       await Promise.all([
@@ -110,8 +113,10 @@ export default function SettingsPage() {
       ]);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch {
-      // silently ignore – toast system can be wired in later
+    } catch (err: unknown) {
+      const zodMsg = err instanceof ZodError ? err.issues[0]?.message : undefined;
+      const axErr  = err as { response?: { data?: { message?: string } } };
+      setError(zodMsg ?? axErr?.response?.data?.message ?? 'Failed to save settings. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -187,6 +192,18 @@ export default function SettingsPage() {
         >
           <Save size={14} /> Settings saved successfully.
         </motion.div>
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 20,
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 13, color: 'var(--error, #ef4444)',
+        }}>
+          ⚠️ {error}
+        </div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>

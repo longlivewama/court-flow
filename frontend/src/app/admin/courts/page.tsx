@@ -34,6 +34,7 @@ const EMPTY_FORM: CourtForm = { name: '', number: '', description: '', pricePerS
 export default function CourtsPage() {
   const [courts, setCourts]     = useState<Court[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing]   = useState<Court | null>(null);
   const [form, setForm]         = useState<CourtForm>(EMPTY_FORM);
@@ -41,10 +42,14 @@ export default function CourtsPage() {
 
   async function load() {
     setLoading(true);
+    setError('');
     try {
       const { data } = await api.get('/courts');
       setCourts(data);
-    } catch {} finally { setLoading(false); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to load courts.');
+    } finally { setLoading(false); }
   }
 
   useEffect(() => { load(); }, []);
@@ -72,7 +77,10 @@ export default function CourtsPage() {
       }
       setShowForm(false);
       await load();
-    } catch {} finally { setSaving(false); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to save court. Please try again.');
+    } finally { setSaving(false); }
   }
 
   async function deleteCourt(id: string) {
@@ -97,6 +105,17 @@ export default function CourtsPage() {
           <Plus size={14} /> Add Court
         </button>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* Court grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
