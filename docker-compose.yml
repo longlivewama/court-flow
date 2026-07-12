@@ -66,14 +66,18 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://localhost/api
     container_name: courtflow_frontend
     restart: unless-stopped
     depends_on:
       - api
     environment:
       NEXT_PUBLIC_API_URL: https://localhost/api
-    ports:
-      - "3000:3000"
+    # Served through nginx (frontend:3000 on the compose network); no host port
+    # publish so :3000 stays free for local `next dev`.
+    expose:
+      - "3000"
 
   # ── Nginx reverse proxy ────────────────────────────────────
   nginx:
