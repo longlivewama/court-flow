@@ -33,30 +33,41 @@ function methodLabel(m?: string) {
 export default function VerifyPage() {
   const [bookings, setBookings] = useState<PendingBooking[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [actionError, setActionError] = useState('');
   const [processing, setProcessing] = useState<string | null>(null);
   const [rejectDialog, setRejectDialog] = useState<{ bookingId: string } | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
 
   async function load() {
     setLoading(true);
+    setError('');
     try {
       const { data } = await api.get('/bookings?status=pending_verification&limit=50');
       setBookings(data.data ?? data);
-    } catch {} finally { setLoading(false); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to load pending verifications.');
+    } finally { setLoading(false); }
   }
 
   useEffect(() => { load(); }, []);
 
   async function handleApprove(bookingId: string) {
     setProcessing(bookingId);
+    setActionError('');
     try {
       await api.patch(`/bookings/${bookingId}/verify`, { action: 'approve' });
       setBookings((prev) => prev.filter((b) => b.id !== bookingId));
-    } catch {} finally { setProcessing(null); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setActionError(axErr?.response?.data?.message ?? 'Failed to approve deposit.');
+    } finally { setProcessing(null); }
   }
 
   async function handleReject(bookingId: string) {
     setProcessing(bookingId);
+    setActionError('');
     try {
       await api.patch(`/bookings/${bookingId}/verify`, {
         action: 'reject', rejectionReason,
@@ -64,7 +75,10 @@ export default function VerifyPage() {
       setBookings((prev) => prev.filter((b) => b.id !== bookingId));
       setRejectDialog(null);
       setRejectionReason('');
-    } catch {} finally { setProcessing(null); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setActionError(axErr?.response?.data?.message ?? 'Failed to reject deposit.');
+    } finally { setProcessing(null); }
   }
 
   return (
@@ -75,6 +89,26 @@ export default function VerifyPage() {
           <p className="page-subtitle">{bookings.length} bookings awaiting verification</p>
         </div>
       </div>
+
+      {/* Error banners */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
+      {actionError && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {actionError}
+        </div>
+      )}
 
       {loading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

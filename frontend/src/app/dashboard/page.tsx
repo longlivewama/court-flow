@@ -145,6 +145,8 @@ export default function DashboardPage() {
   const [fin,      setFin]      = useState<FinancialSummary | null>(null);
   const [loading,  setLoading]  = useState(true);
   const [finLoad,  setFinLoad]  = useState(true);
+  const [statsError, setStatsError] = useState('');
+  const [finError,   setFinError]   = useState('');
 
   // Analytics state
   const [analytics, setAnalytics] = useState<AnalyticsPlot | null>(null);
@@ -167,6 +169,7 @@ export default function DashboardPage() {
   // ── Booking stats ─────────────────────────────────────────────
   useEffect(() => {
     async function load() {
+      setStatsError('');
       try {
         const [schedRes, pendingRes] = await Promise.all([
           api.get(`/dashboard/schedule?date=${today}`),
@@ -180,7 +183,10 @@ export default function DashboardPage() {
           confirmedToday: schedule.filter((b) => b.status === 'confirmed').length,
           noshowToday:    schedule.filter((b) => b.status === 'no_show').length,
         });
-      } catch { /* graceful */ } finally {
+      } catch (err: unknown) {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setStatsError(axErr?.response?.data?.message ?? 'Failed to load today\u2019s schedule.');
+      } finally {
         setLoading(false);
       }
     }
@@ -191,10 +197,14 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!isStaff) { setFinLoad(false); return; }
     async function loadFin() {
+      setFinError('');
       try {
         const { data } = await api.get('/bookings/financial-summary');
         setFin(data);
-      } catch { /* graceful */ } finally {
+      } catch (err: unknown) {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setFinError(axErr?.response?.data?.message ?? 'Failed to load financial summary.');
+      } finally {
         setFinLoad(false);
       }
     }
@@ -204,9 +214,13 @@ export default function DashboardPage() {
   function refreshFin() {
     setFinLoad(true);
     setFin(null);
+    setFinError('');
     api.get('/bookings/financial-summary')
       .then(({ data }) => setFin(data))
-      .catch(() => {})
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setFinError(axErr?.response?.data?.message ?? 'Failed to refresh financial data.');
+      })
       .finally(() => setFinLoad(false));
   }
 
@@ -453,6 +467,18 @@ export default function DashboardPage() {
         </motion.section>
       )}
 
+      {/* ── Stats error banner ────────────────────────────────── */}
+      {statsError && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <AlertCircle size={14} />
+          {statsError}
+        </div>
+      )}
+
       {/* ── Booking stat cards ──────────────────────────────────── */}
       <div className="stat-grid" style={{ marginBottom: 32 }}>
         {statCards.map((card, i) => (
@@ -514,6 +540,16 @@ export default function DashboardPage() {
           </div>
 
           {/* Financial cards grid */}
+          {finError && (
+            <div style={{
+              background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+              borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+              fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <AlertCircle size={14} />
+              {finError}
+            </div>
+          )}
           <div
             style={{
               display: 'grid',

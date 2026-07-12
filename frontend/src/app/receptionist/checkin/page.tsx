@@ -24,6 +24,8 @@ interface Booking {
 export default function CheckInPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [actionError, setActionError] = useState('');
   const [processing, setProcessing] = useState<string | null>(null);
   const [search, setSearch]     = useState('');
   const [checkedIn, setCheckedIn] = useState<Set<string>>(new Set());
@@ -32,22 +34,30 @@ export default function CheckInPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
       const { data } = await api.get(`/dashboard/schedule?date=${today}`);
       const confirmed = (data as Booking[]).filter((b) => b.status === 'confirmed');
       setBookings(confirmed);
-    } catch {} finally { setLoading(false); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to load check-in list.');
+    } finally { setLoading(false); }
   }, [today]);
 
   useEffect(() => { load(); }, [load]);
 
   async function handleCheckIn(bookingId: string) {
     setProcessing(bookingId);
+    setActionError('');
     try {
       await api.patch(`/bookings/${bookingId}/checkin`);
       setCheckedIn((prev) => new Set([...prev, bookingId]));
       setBookings((prev) => prev.filter((b) => b.id !== bookingId));
-    } catch {} finally { setProcessing(null); }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setActionError(axErr?.response?.data?.message ?? 'Failed to check in this booking.');
+    } finally { setProcessing(null); }
   }
 
   const filtered = search
@@ -69,6 +79,26 @@ export default function CheckInPage() {
           </p>
         </div>
       </div>
+
+      {/* Error banners */}
+      {error && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
+      {actionError && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ {actionError}
+        </div>
+      )}
 
       {/* Quick search */}
       <div style={{ position: 'relative', maxWidth: 400, marginBottom: 24 }}>

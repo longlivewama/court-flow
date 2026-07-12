@@ -56,13 +56,12 @@ export async function register(req: Request, res: Response, next: NextFunction):
 
       const link = `${process.env.FRONTEND_URL}/verify-email?token=${rawToken}`;
       if (process.env.NODE_ENV === 'development') {
-        console.log(`Verification link for ${email}: ${link}`);
+        logger.info({ email, link }, 'Verification link (dev only)');
       } else {
         try {
           await emailService.sendVerificationEmail({ to: email, firstName, verificationLink: link });
         } catch (err) {
-          console.log(`Verification link for ${email}: ${link}`);
-          logger.warn({ err, email }, 'Verification email failed; registration will continue');
+          logger.warn({ err, email }, 'Verification email failed; registration will continue — token NOT logged for security');
         }
       }
 

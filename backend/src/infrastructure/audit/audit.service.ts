@@ -10,6 +10,7 @@
  */
 import { PoolClient } from 'pg';
 import { auditDb } from '../../infrastructure/database/client';
+import { logger } from '../../shared/logger';
 
 export interface AuditEntry {
   clubId:         string;
@@ -49,7 +50,7 @@ export async function auditLog(entry: AuditEntry): Promise<void> {
     ]);
   } catch (err) {
     // Never let audit failure break the main request flow
-    console.error('Audit log failed:', err);
+    logger.error({ err }, 'Fire-and-forget audit log insert failed');
   }
 }
 

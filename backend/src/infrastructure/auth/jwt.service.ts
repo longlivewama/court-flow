@@ -14,6 +14,7 @@ import * as jwt from 'jsonwebtoken';
 import fs from 'fs';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../../shared/logger';
 
 interface KeyPair {
   privateKey: Buffer;
@@ -50,15 +51,14 @@ function loadKeys(): KeyPair {
     // In development/test, warn and generate an ephemeral RSA-2048 pair so
     // auth flows work without pre-provisioned keys.
     if (isEnoent) {
-      console.warn(
-        '[jwt.service] Key files not found — generating an ephemeral RSA-2048 ' +
-        'pair for this process. Tokens will NOT survive a restart. ' +
-        `(looked for: ${privatePath}, ${publicPath})`
+      logger.warn(
+        { privatePath, publicPath },
+        '[jwt.service] Key files not found — generating an ephemeral RSA-2048 pair for this process. Tokens will NOT survive a restart.'
       );
     } else {
-      console.warn(
-        `[jwt.service] Unexpected error reading key files, falling back to ` +
-        `ephemeral RSA pair: ${(err as Error).message}`
+      logger.warn(
+        { err },
+        '[jwt.service] Unexpected error reading key files, falling back to ephemeral RSA pair'
       );
     }
 
