@@ -233,7 +233,13 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
 
     if (!resolvedCustomerId) resolvedCustomerId = userId; // Fallback
     
-    const discountAmount = parsed.discountAmount ?? parsed.discount_amount ?? 0;
+    // Discounts are a staff pricing lever. A customer must never be able to
+    // discount their own booking (it reduces total_price and the required
+    // deposit downstream), so force it to 0 regardless of the payload — the
+    // same authorization gate applied to admin_notes below.
+    const discountAmount = role === 'customer'
+      ? 0
+      : (parsed.discountAmount ?? parsed.discount_amount ?? 0);
     const depositAmount  = parsed.depositAmount  ?? parsed.deposit_amount
       ?? parsed.amountPaid ?? parsed.amount_paid ?? 0;
     const depositMethod  = parsed.depositMethod  ?? parsed.deposit_method
