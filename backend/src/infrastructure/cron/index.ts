@@ -167,28 +167,35 @@ async function runNoShowJob(): Promise<void> {
       );
 
       for (const booking of noshowBookings) {
-        logger.info({ bookingId: booking.id }, 'Booking marked as no-show');
+        // The bulk UPDATE above already committed the no-show status, so isolate
+        // each booking's audit + notification side-effects: one customer's email
+        // failure must not abort the remaining no-show notifications.
+        try {
+          logger.info({ bookingId: booking.id }, 'Booking marked as no-show');
 
-        await auditLog({
-          clubId:     club.id,
-          actionType: AUDIT_ACTIONS.BOOKING_NO_SHOW,
-          entityType: 'booking',
-          entityId:   booking.id,
-          newValues:  { status: 'no_show', detectedAt: new Date().toISOString() },
-        });
-
-        // Notify customer
-        const { rows: custRows } = await db.query<{ email: string; first_name: string }>(
-          `SELECT email, first_name FROM users WHERE id = $1`,
-          [booking.customer_id]
-        );
-        if (custRows.length) {
-          await emailService.sendNoShowNotice({
-            to:        custRows[0].email,
-            firstName: custRows[0].first_name,
-            bookingId: booking.id,
-            startTime: booking.start_time,
+          await auditLog({
+            clubId:     club.id,
+            actionType: AUDIT_ACTIONS.BOOKING_NO_SHOW,
+            entityType: 'booking',
+            entityId:   booking.id,
+            newValues:  { status: 'no_show', detectedAt: new Date().toISOString() },
           });
+
+          // Notify customer
+          const { rows: custRows } = await db.query<{ email: string; first_name: string }>(
+            `SELECT email, first_name FROM users WHERE id = $1`,
+            [booking.customer_id]
+          );
+          if (custRows.length) {
+            await emailService.sendNoShowNotice({
+              to:        custRows[0].email,
+              firstName: custRows[0].first_name,
+              bookingId: booking.id,
+              startTime: booking.start_time,
+            });
+          }
+        } catch (err) {
+          logger.error({ err, bookingId: booking.id }, 'Failed to finalize no-show notification');
         }
       }
     }
