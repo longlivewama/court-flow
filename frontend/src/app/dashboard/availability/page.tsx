@@ -98,8 +98,9 @@ export default function AvailabilityPage() {
 
   const now = new Date();
 
+  // Booked/blocked takes precedence over "past" so history stays visible on
+  // the grid — only a slot that was never booked or blocked collapses to 'past'.
   function slotState(courtId: string, start: Date, end: Date): SlotState {
-    if (end <= now) return 'past';
     const isBooked = data?.bookedSlots.some(
       (b) => b.court_id === courtId && new Date(b.start_time) < end && new Date(b.end_time) > start
     );
@@ -109,6 +110,7 @@ export default function AvailabilityPage() {
         && new Date(bp.start_at) < end && new Date(bp.end_at) > start
     );
     if (isBlocked) return 'blocked';
+    if (end <= now) return 'past';
     return 'free';
   }
 
@@ -268,13 +270,14 @@ export default function AvailabilityPage() {
                 {courts.map((c) => {
                   const state = slotState(c.id, start, end);
                   const style = SLOT_STYLE[state];
+                  const isPast = end <= now;
                   const clickable = state === 'free';
                   return (
                     <motion.button
                       key={`${c.id}-${hour}`}
                       type="button"
                       role="gridcell"
-                      aria-label={`${c.name} at ${hourLabel(hour)}: ${style.label}`}
+                      aria-label={`${c.name} at ${hourLabel(hour)}: ${style.label}${isPast && state !== 'past' ? ' (past)' : ''}`}
                       initial={{ opacity: 0, scale: 0.96 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: Math.min(rowIdx * 0.02, 0.3) }}
@@ -290,7 +293,7 @@ export default function AvailabilityPage() {
                         color: style.color,
                         fontSize: 12, fontWeight: 700, letterSpacing: '0.02em',
                         cursor: clickable ? 'pointer' : 'default',
-                        opacity: state === 'past' ? 0.45 : 1,
+                        opacity: isPast ? 0.45 : 1,
                         transition: 'background 0.15s',
                       }}
                     >
