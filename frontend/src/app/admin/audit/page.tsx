@@ -4,7 +4,7 @@
  * Audit Log Viewer – append-only, filterable, owner-only.
  * Displays the immutable audit_logs table with precise timestamps.
  */
-import { useState, useEffect } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Shield, Search } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -114,9 +114,8 @@ export default function AuditPage() {
                 </tr>
               ))
             ) : filtered.map((log) => (
-              <>
+              <Fragment key={log.id}>
                 <motion.tr
-                  key={log.id}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   onClick={() => setExpanded(expanded === log.id ? null : log.id)}
@@ -185,7 +184,7 @@ export default function AuditPage() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
           </tbody>
         </table>
