@@ -12,6 +12,7 @@ import { redis } from './infrastructure/cache/redis.client';
 import { registerRoutes } from './interfaces/http/routes';
 import { globalErrorHandler } from './interfaces/http/middleware/error.middleware';
 import { startCronJobs } from './infrastructure/cron';
+import { seedDefaultOwner } from './infrastructure/database/seed';
 
 const app = express();
 
@@ -56,6 +57,9 @@ async function bootstrap() {
 
     await redis.ping();
     logger.info('✅ Redis connected');
+
+    await seedDefaultOwner();
+    logger.info('✅ Default dev owner ensured');
 
     startCronJobs();
     logger.info('✅ Cron jobs started');
