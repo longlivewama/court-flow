@@ -7,6 +7,7 @@ import { withTransaction } from '../../infrastructure/database/client';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
 import { NotFoundError, ForbiddenError } from '../../shared/errors';
+import { logger } from '../../shared/logger';
 
 export interface VerifyDepositInput {
   bookingId:       string;
@@ -73,15 +74,20 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         newValues: { status: 'confirmed', paymentStatus: 'deposit_approved' },
       });
 
-      // Send confirmation email
-      await emailService.sendBookingConfirmation({
-        to:           customer.email,
-        firstName:    customer.first_name,
-        bookingId:    input.bookingId,
-        startTime:    booking.start_time,
-        depositAmount: booking.deposit_amount,
-        totalPrice:   booking.total_price,
-      });
+      // Send confirmation email — best-effort: an SMTP outage must never
+      // roll back an already-verified deposit.
+      try {
+        await emailService.sendBookingConfirmation({
+          to:           customer.email,
+          firstName:    customer.first_name,
+          bookingId:    input.bookingId,
+          startTime:    booking.start_time,
+          depositAmount: booking.deposit_amount,
+          totalPrice:   booking.total_price,
+        });
+      } catch (err) {
+        logger.warn({ err, bookingId: input.bookingId }, 'Booking confirmation email failed; deposit approval preserved');
+      }
     } else {
       // Reject
       await client.query(
@@ -99,13 +105,17 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         newValues: { paymentStatus: 'deposit_rejected', reason: input.rejectionReason },
       });
 
-      // Send rejection email
-      await emailService.sendPaymentRejected({
-        to:        customer.email,
-        firstName: customer.first_name,
-        bookingId: input.bookingId,
-        reason:    input.rejectionReason ?? 'Your receipt could not be verified. Please re-upload.',
-      });
+      // Send rejection email — best-effort, same rationale as above
+      try {
+        await emailService.sendPaymentRejected({
+          to:        customer.email,
+          firstName: customer.first_name,
+          bookingId: input.bookingId,
+          reason:    input.rejectionReason ?? 'Your receipt could not be verified. Please re-upload.',
+        });
+      } catch (err) {
+        logger.warn({ err, bookingId: input.bookingId }, 'Payment rejection email failed; rejection preserved');
+      }
     }
   });
 }

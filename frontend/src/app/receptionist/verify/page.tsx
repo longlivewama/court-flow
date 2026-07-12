@@ -1,15 +1,19 @@
 'use client';
 
 /**
- * Receptionist deposit verification queue.
- * Displays bookings in 'pending_verification' status with approve/reject actions.
+ * Deposit verification queue (receptionist + owner).
+ * Every 'pending_verification' booking is shown with its uploaded deposit
+ * receipt image side-by-side with the customer's self-reported payment
+ * metadata (amount paid + payment method) so staff can verify the transfer
+ * and confirm the booking in one glance.
  */
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle, XCircle, Eye } from 'lucide-react';
+import { CheckCircle, XCircle, Eye, Wallet, CreditCard } from 'lucide-react';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
+import { ReceiptViewer } from '@/components/ReceiptViewer';
 
 const TIMEZONE = 'Africa/Cairo';
 const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
@@ -17,7 +21,13 @@ const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 interface PendingBooking {
   id: string; first_name: string; last_name: string; customer_email: string;
   court_name: string; start_time: string; deposit_amount: number; total_price: number;
+  deposit_method: string; remainder_amount: number; deposit_status: string;
   payment_id: string;
+}
+
+function methodLabel(m?: string) {
+  if (!m || m === 'NONE') return 'Not specified';
+  return m.replace(/_/g, ' ');
 }
 
 export default function VerifyPage() {
@@ -93,38 +103,72 @@ export default function VerifyPage() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 16, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
                 transition={{ ...SPRING, delay: i * 0.04 }}
-                style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 20px' }}
+                style={{ display: 'flex', alignItems: 'stretch', gap: 20, padding: '18px 20px', flexWrap: 'wrap' }}
               >
-                {/* Info */}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 14 }}>
-                    {b.first_name} {b.last_name}
+                {/* ── Left: booking + self-reported payment metadata ── */}
+                <div style={{ flex: '1 1 260px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 14 }}>
+                      {b.first_name} {b.last_name}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                      {b.customer_email}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                    {b.customer_email}
+
+                  <div style={{ display: 'flex', gap: 18 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>{b.court_name}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                        {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'dd/MM HH:mm')}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                        EGP {Number(b.deposit_amount).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                        of EGP {Number(b.total_price).toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Self-reported payment chips */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 'auto' }}>
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      fontSize: 12, fontWeight: 600, color: '#22c55e',
+                      background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)',
+                      borderRadius: 999, padding: '4px 12px', fontFamily: 'var(--font-mono)',
+                    }}>
+                      <Wallet size={12} />
+                      Reported paid: EGP {Number(b.deposit_amount).toFixed(2)}
+                    </span>
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      fontSize: 12, fontWeight: 600, color: '#8b5cf6',
+                      background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.25)',
+                      borderRadius: 999, padding: '4px 12px',
+                    }}>
+                      <CreditCard size={12} />
+                      {methodLabel(b.deposit_method)}
+                    </span>
                   </div>
                 </div>
 
-                {/* Court & time */}
-                <div style={{ minWidth: 140 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{b.court_name}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                    {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'dd/MM HH:mm')}
+                {/* ── Middle: deposit receipt image (side-by-side) ── */}
+                <div style={{ flex: '0 1 240px', minWidth: 200 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '0.06em', color: 'var(--text-tertiary)', marginBottom: 6,
+                  }}>
+                    Deposit Receipt
                   </div>
+                  <ReceiptViewer bookingId={b.id} maxHeight={160} />
                 </div>
 
-                {/* Amounts */}
-                <div style={{ minWidth: 100, textAlign: 'right' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                    EGP {Number(b.deposit_amount).toFixed(2)}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                    of EGP {Number(b.total_price).toFixed(2)}
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div style={{ display: 'flex', gap: 8 }}>
+                {/* ── Right: actions ── */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <a
                     href={`/dashboard/bookings/${b.id}`}
                     className="btn btn-secondary btn-sm"

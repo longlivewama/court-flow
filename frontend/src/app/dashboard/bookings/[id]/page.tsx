@@ -13,6 +13,7 @@ import {
   ChevronDown, Loader2, BadgeCheck, Wallet, TrendingDown, UploadCloud, Trash2,
 } from 'lucide-react';
 import { StateChip, BookingStatus } from '@/components/StateChip';
+import { ReceiptViewer } from '@/components/ReceiptViewer';
 
 const TIMEZONE = 'Africa/Cairo';
 
@@ -1065,6 +1066,31 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             <SettleForm booking={booking} onSuccess={refreshBooking} />
           </motion.div>
         )}
+
+        {/* ── Deposit Receipt (visible to staff and the booking owner) ── */}
+        <motion.div
+          className="card"
+          style={{ padding: 28 }}
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+        >
+          <h2
+            style={{
+              fontSize: 16, fontWeight: 600, marginBottom: 6,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            <Wallet size={18} color="var(--accent)" />
+            Deposit Receipt
+          </h2>
+          <p style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 16 }}>
+            {isStaff
+              ? `Self-reported: EGP ${depositAmt.toFixed(2)} via ${methodLabel(booking.deposit_method)} — compare against the uploaded proof below.`
+              : 'The payment proof attached to this booking.'}
+          </p>
+          <ReceiptViewer bookingId={booking.id} maxHeight={300} />
+        </motion.div>
 
         {/* ── Receipt Upload (Customer only) ─────────────────────── */}
         {user?.role === 'customer' &&

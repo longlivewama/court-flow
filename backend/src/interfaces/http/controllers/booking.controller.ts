@@ -10,6 +10,7 @@ import { verifyDeposit } from '../../../application/booking/verify-deposit.useca
 import { deleteBooking } from '../../../application/booking/delete-booking.usecase';
 import { db } from '../../../infrastructure/database/client';
 import { withTransaction } from '../../../infrastructure/database/client';
+import { decryptFile } from '../../../infrastructure/auth/encryption.service';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { emailService } from '../../../infrastructure/email/email.service';
 import { NotFoundError, ForbiddenError, ValidationError } from '../../../shared/errors';
@@ -21,7 +22,21 @@ const upload = multer({
   limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE_MB ?? '10') * 1024 * 1024 },
 });
 
-export const receiptUploadMiddleware = upload.single('receipt');
+// Translate multer failures (oversized file, malformed multipart body, wrong
+// field name) into operational 400s instead of unhandled 500s.
+export function receiptUploadMiddleware(req: Request, res: Response, next: NextFunction): void {
+  upload.single('receipt')(req, res, (err: unknown) => {
+    if (err instanceof multer.MulterError) {
+      const message = err.code === 'LIMIT_FILE_SIZE'
+        ? `File too large. Maximum size is ${process.env.MAX_FILE_SIZE_MB ?? 10} MB`
+        : err.code === 'LIMIT_UNEXPECTED_FILE'
+          ? `Unexpected file field '${err.field}'. Upload the file under the 'receipt' field.`
+          : `Upload failed: ${err.message}`;
+      return next(new ValidationError(message));
+    }
+    next(err);
+  });
+}
 
 // ── GET /api/bookings ──────────────────────────────────────
 // Customers must never receive admin_notes – strip it from every row
@@ -164,6 +179,12 @@ const createBookingSchema = z.object({
   remainder_amount: z.number().min(0).optional(),
   remainderMethod: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   remainder_method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
+  // Customer-facing aliases: "how much did you pay and how" — stored as the
+  // booking's deposit (self-reported until staff verify the receipt).
+  amountPaid: z.number().min(0).optional(),
+  amount_paid: z.number().min(0).optional(),
+  paymentMethod: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
+  payment_method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   adminNotes: z.string().optional(),
   admin_notes: z.string().optional(),
 });
@@ -209,8 +230,10 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
     if (!resolvedCustomerId) resolvedCustomerId = userId; // Fallback
     
     const discountAmount = parsed.discountAmount ?? parsed.discount_amount ?? 0;
-    const depositAmount  = parsed.depositAmount  ?? parsed.deposit_amount  ?? 0;
-    const depositMethod  = parsed.depositMethod  ?? parsed.deposit_method  ?? 'NONE';
+    const depositAmount  = parsed.depositAmount  ?? parsed.deposit_amount
+      ?? parsed.amountPaid ?? parsed.amount_paid ?? 0;
+    const depositMethod  = parsed.depositMethod  ?? parsed.deposit_method
+      ?? parsed.paymentMethod ?? parsed.payment_method ?? 'NONE';
     const remainderAmount= parsed.remainderAmount?? parsed.remainder_amount?? 0;
     const remainderMethod= parsed.remainderMethod?? parsed.remainder_method?? 'NONE';
 
@@ -292,6 +315,49 @@ export async function uploadReceiptHandler(req: Request, res: Response, next: Ne
     });
 
     res.json({ message: 'Receipt uploaded successfully. Awaiting verification.' });
+  } catch (err) { next(err); }
+}
+
+// ── GET /api/bookings/:id/receipt ─────────────────────────────
+// Streams the latest decrypted receipt for a booking.
+// Staff (receptionist/owner/admin) can view any receipt; customers only their own.
+export async function getReceiptHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { role, sub: userId } = req.user!;
+
+    const { rows: bookingRows } = await db.query<{ id: string; customer_id: string }>(
+      `SELECT id, customer_id FROM bookings WHERE id = $1 AND club_id = $2`,
+      [id, CLUB_ID]
+    );
+    if (!bookingRows.length) throw new NotFoundError('Booking', id);
+
+    if (role === 'customer' && bookingRows[0].customer_id !== userId) {
+      throw new ForbiddenError('You can only view receipts for your own bookings');
+    }
+
+    const { rows: receiptRows } = await db.query<{
+      file_name: string; file_mime: string; storage_key: string; encryption_iv: string;
+    }>(
+      `SELECT file_name, file_mime, storage_key, encryption_iv
+       FROM receipts WHERE booking_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [id]
+    );
+    if (!receiptRows.length) throw new NotFoundError('Receipt for booking', id);
+    const receipt = receiptRows[0];
+
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = decryptFile(receipt.storage_key, receipt.encryption_iv);
+    } catch {
+      // File missing on disk or encrypted under a rotated/incorrect key
+      throw new NotFoundError('Receipt file (unreadable or missing from storage)', id);
+    }
+
+    res.setHeader('Content-Type', receipt.file_mime);
+    res.setHeader('Content-Disposition', `inline; filename="${receipt.file_name.replace(/"/g, '')}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(fileBuffer);
   } catch (err) { next(err); }
 }
 
@@ -389,11 +455,16 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         newValues: { status: 'cancelled', reason, afterDeadline } });
 
       if (custRows.length) {
-        await emailService.sendBookingCancellation({
-          to: custRows[0].email, firstName: custRows[0].first_name,
-          bookingId: booking.id, startTime: booking.start_time,
-          refundStatus: afterDeadline ? 'Deposit forfeited (after cancellation deadline)' : 'Eligible for refund',
-        });
+        // Best-effort: an SMTP outage must never roll back the cancellation
+        try {
+          await emailService.sendBookingCancellation({
+            to: custRows[0].email, firstName: custRows[0].first_name,
+            bookingId: booking.id, startTime: booking.start_time,
+            refundStatus: afterDeadline ? 'Deposit forfeited (after cancellation deadline)' : 'Eligible for refund',
+          });
+        } catch {
+          // logged inside the email service after its own retries
+        }
       }
     });
 

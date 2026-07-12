@@ -50,6 +50,8 @@ export function registerRoutes(app: Express): void {
     bookingCtrl.receiptUploadMiddleware,
     bookingCtrl.uploadReceiptHandler
   );
+  // View the uploaded receipt (staff verify any; customers only their own — enforced in handler)
+  bookings.get('/:id/receipt', bookingCtrl.getReceiptHandler);
   bookings.patch('/:id/verify',   requireRole('receptionist', 'owner'), bookingCtrl.verifyDepositHandler);
   bookings.patch('/:id/checkin',  requireRole('receptionist', 'owner'), bookingCtrl.checkinHandler);
   bookings.patch('/:id/cancel',   bookingCtrl.cancelBookingHandler);
@@ -63,6 +65,8 @@ export function registerRoutes(app: Express): void {
   const courts = Router();
   courts.use(authenticate);
   courts.get('/',      courtCtrl.listCourts);
+  // Must be declared BEFORE /:id so 'availability-grid' isn't matched as a court id
+  courts.get('/availability-grid', courtCtrl.getAvailabilityGrid);
   courts.get('/:id',   courtCtrl.getCourt);
   courts.post('/',     requireRole('owner'), courtCtrl.createCourt);
   courts.patch('/:id', requireRole('owner'), courtCtrl.updateCourt);
