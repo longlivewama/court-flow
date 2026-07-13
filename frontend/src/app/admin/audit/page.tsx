@@ -38,6 +38,115 @@ const ACTION_COLORS: Record<string, string> = {
   REFUND_APPROVED: 'var(--warning)',
 };
 
+// ── Generic detail formatting ─────────────────────────────────────
+// Audit payloads are fully dynamic (each action_type writes its own
+// shape), so keys and values are transformed generically rather than
+// mapped per action.
+
+/** camelCase / snake_case / kebab-case → "Title Case" */
+function formatKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+const DATE_ONLY_RE    = /^\d{4}-\d{2}-\d{2}$/;
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') {
+    return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  }
+  if (typeof value === 'string') {
+    if (ISO_DATETIME_RE.test(value)) {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return format(d, 'dd/MM/yyyy hh:mm aa');
+    }
+    if (DATE_ONLY_RE.test(value)) {
+      const [y, m, d] = value.split('-').map(Number);
+      return format(new Date(y, m - 1, d), 'dd/MM/yyyy');
+    }
+    // Plain numeric strings (prices, durations) – preserve decimals but add
+    // thousands separators. Leading-zero strings (phone numbers) are left as-is.
+    if (/^-?[1-9]\d*(\.\d+)?$/.test(value) || /^-?0(\.\d+)?$/.test(value)) {
+      const decimals = Math.min(value.split('.')[1]?.length ?? 0, 2);
+      return Number(value).toLocaleString('en-US', {
+        minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+      });
+    }
+    return value;
+  }
+  return String(value);
+}
+
+/** Recursive key-value list for an arbitrary audit payload object. */
+function DetailList({ data, depth = 0 }: { data: Record<string, unknown>; depth?: number }) {
+  const entries = Object.entries(data);
+  if (entries.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>—</div>;
+  }
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 6,
+      paddingLeft: depth > 0 ? 12 : 0,
+      borderLeft: depth > 0 ? '2px solid var(--border)' : 'none',
+    }}>
+      {entries.map(([key, value]) => {
+        const isNestedObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+        const isObjectArray  = Array.isArray(value) && value.some((v) => v !== null && typeof v === 'object');
+
+        if (isNestedObject || isObjectArray) {
+          const items = isNestedObject ? [value] : (value as unknown[]);
+          return (
+            <div key={key}>
+              <div style={{
+                fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
+                letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: 4,
+              }}>
+                {formatKey(key)}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {items.map((item, i) => (
+                  item !== null && typeof item === 'object'
+                    ? <DetailList key={i} data={item as Record<string, unknown>} depth={depth + 1} />
+                    : <div key={i} style={{ fontSize: 12, color: 'var(--text-primary)' }}>{formatValue(item)}</div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div key={key} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+            gap: 16, borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: 5,
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+              {formatKey(key)}
+            </span>
+            <span style={{
+              fontSize: 12, fontWeight: 500, color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono)', textAlign: 'right',
+              overflowWrap: 'anywhere',
+            }}>
+              {Array.isArray(value) && value.length > 0
+                ? value.map(formatValue).join(', ')
+                : formatValue(value)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AuditPage() {
   const [logs, setLogs] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -158,27 +267,58 @@ export default function AuditPage() {
                     <td colSpan={6} style={{ padding: '0 16px 16px' }}>
                       <div style={{
                         background: 'var(--surface-2)', border: '1px solid var(--border)',
-                        borderRadius: 6, padding: 12, display: 'grid',
-                        gridTemplateColumns: '1fr 1fr', gap: 12,
+                        borderRadius: 6, padding: 14,
+                        display: 'flex', flexDirection: 'column', gap: 12,
                       }}>
-                        {log.previous_values && (
-                          <div>
-                            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-tertiary)', marginBottom: 6 }}>
-                              Previous Values
-                            </div>
-                            <pre style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--error)', overflow: 'auto' }}>
-                              {JSON.stringify(log.previous_values, null, 2)}
-                            </pre>
+                        {!log.previous_values && !log.new_values && !log.reason && (
+                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                            No additional details recorded for this action.
                           </div>
                         )}
-                        {log.new_values && (
-                          <div>
-                            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-tertiary)', marginBottom: 6 }}>
-                              New Values
+
+                        <div style={{
+                          display: 'grid', gap: 12,
+                          gridTemplateColumns: log.previous_values && log.new_values ? '1fr 1fr' : '1fr',
+                        }}>
+                          {log.previous_values && (
+                            <div style={{
+                              background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.15)',
+                              borderRadius: 6, padding: '10px 12px',
+                            }}>
+                              <div style={{
+                                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                                letterSpacing: 1, color: 'var(--error)', marginBottom: 8,
+                              }}>
+                                Previous Values
+                              </div>
+                              <DetailList data={log.previous_values} />
                             </div>
-                            <pre style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--success)', overflow: 'auto' }}>
-                              {JSON.stringify(log.new_values, null, 2)}
-                            </pre>
+                          )}
+                          {log.new_values && (
+                            <div style={{
+                              background: 'rgba(16,185,129,0.04)', border: '1px solid rgba(16,185,129,0.15)',
+                              borderRadius: 6, padding: '10px 12px',
+                            }}>
+                              <div style={{
+                                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                                letterSpacing: 1, color: 'var(--success)', marginBottom: 8,
+                              }}>
+                                New Values
+                              </div>
+                              <DetailList data={log.new_values} />
+                            </div>
+                          )}
+                        </div>
+
+                        {log.reason && (
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                              letterSpacing: 1, color: 'var(--text-tertiary)', marginRight: 8,
+                            }}>
+                              Reason
+                            </span>
+                            {log.reason}
                           </div>
                         )}
                       </div>
