@@ -53,6 +53,8 @@ services:
     environment:
       NODE_ENV:     development
       DATABASE_URL: postgresql://courtflow:${POSTGRES_PASSWORD:-courtflow_pass}@postgres:5432/courtflow
+      # backend/.env points this at 127.0.0.1 (host-oriented); inside the container it must target the postgres service
+      DATABASE_URL_AUDIT: postgresql://audit_writer:${AUDIT_DB_PASSWORD:-CHANGE_IN_PRODUCTION}@postgres:5432/courtflow?sslmode=disable
       REDIS_URL:    redis://:${REDIS_PASSWORD:-redis_pass}@redis:6379
       PORT:         4000
     volumes:

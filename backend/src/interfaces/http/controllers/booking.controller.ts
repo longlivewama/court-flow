@@ -287,7 +287,8 @@ export async function getBooking(req: Request, res: Response, next: NextFunction
               COALESCE(c.number, 0) AS court_number,
               COALESCE(u.first_name, 'Unknown') AS first_name,
               COALESCE(u.last_name, 'User') AS last_name,
-              COALESCE(u.email, '') AS customer_email
+              COALESCE(u.email, '') AS customer_email,
+              EXISTS (SELECT 1 FROM receipts r WHERE r.booking_id = b.id) AS has_receipt
        FROM bookings b
        LEFT JOIN courts c ON c.id = b.court_id
        LEFT JOIN users  u ON u.id = b.customer_id

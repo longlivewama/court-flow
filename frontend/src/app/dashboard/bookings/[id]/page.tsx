@@ -46,6 +46,7 @@ interface BookingDetails {
   amount_paid: number;
   discount_amount: number;
   admin_notes?: string;
+  has_receipt?: boolean;
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -1119,7 +1120,7 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
               ? `Self-reported: EGP ${depositAmt.toFixed(2)} via ${methodLabel(booking.deposit_method)} — compare against the uploaded proof below.`
               : 'The payment proof attached to this booking.'}
           </p>
-          <ReceiptViewer bookingId={booking.id} maxHeight={300} />
+          <ReceiptViewer bookingId={booking.id} exists={booking.has_receipt} maxHeight={300} />
         </motion.div>
 
         {/* ── Receipt Upload (Customer only) ─────────────────────── */}
