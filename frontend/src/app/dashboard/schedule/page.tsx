@@ -410,16 +410,16 @@ function BlockModal({ courts, workingHours, selectedDate, onClose, onCreated }: 
             <motion.button
               type="submit"
               disabled={loading || success}
-              whileHover={{ scale: (loading || success) ? 1 : 1.01 }}
+              whileHover={(loading || success) ? {} : { scale: 1.01, backgroundColor: '#b91c1c' }}
               whileTap={{ scale: (loading || success) ? 1 : 0.97 }}
+              transition={{ duration: 0.15 }}
               style={{
-                flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
-                background: (loading || success) ? 'var(--bg-secondary)'
-                  : `linear-gradient(135deg, ${cfg.border} 0%, ${cfg.border}bb 100%)`,
+                flex: 2, padding: '11px 16px', borderRadius: 6, border: 'none',
+                background: (loading || success) ? 'var(--bg-secondary)' : '#dc2626',
                 color: (loading || success) ? 'var(--text-tertiary)' : '#fff',
-                fontWeight: 700, fontSize: 14, cursor: (loading || success) ? 'not-allowed' : 'pointer',
+                fontWeight: 500, fontSize: 14, cursor: (loading || success) ? 'not-allowed' : 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                boxShadow: (loading || success) ? 'none' : `0 4px 16px ${cfg.border}44`,
+                boxShadow: (loading || success) ? 'none' : '0 4px 16px rgba(220,38,38,0.35)',
               }}
             >
               {loading

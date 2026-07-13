@@ -74,6 +74,7 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
               COALESCE(u.first_name, 'Unknown') AS first_name,
               COALESCE(u.last_name, 'User') AS last_name,
               COALESCE(u.email, '') AS customer_email,
+              u.phone AS customer_phone,
               p.status AS payment_status, p.deposit_amount, p.total_amount
        FROM bookings b
        LEFT JOIN courts c ON c.id = b.court_id

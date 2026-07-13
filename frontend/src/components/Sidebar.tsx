@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, Calendar, CalendarCheck, Users, BarChart2,
   Settings, FileText, Shield, CreditCard, LogOut, Zap,
@@ -44,6 +45,24 @@ export function Sidebar() {
   const pathname = usePathname();
   const { user, clearAuth } = useAuthStore();
   const router = useRouter();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  const canVerify = user?.role === 'receptionist' || user?.role === 'owner';
+
+  // Refetch on every navigation so the badge stays in sync as staff
+  // approve/reject deposits on the verify page.
+  useEffect(() => {
+    if (!canVerify) return;
+    let cancelled = false;
+    api.get('/bookings?status=pending_verification&limit=50')
+      .then(({ data }) => {
+        if (cancelled) return;
+        const rows = data.data ?? data;
+        setPendingCount(Array.isArray(rows) ? rows.length : 0);
+      })
+      .catch(() => { /* badge is best-effort; never block navigation */ });
+    return () => { cancelled = true; };
+  }, [canVerify, pathname]);
 
   const visible = NAV_ITEMS.filter(
     (item) => user?.role && item.roles.includes(user.role)
@@ -87,6 +106,24 @@ export function Sidebar() {
             >
               <span style={{ opacity: 0.7 }}>{item.icon}</span>
               {item.label}
+              {item.href === '/receptionist/verify' && pendingCount > 0 && (
+                <span
+                  aria-label={`${pendingCount} bookings awaiting verification`}
+                  style={{
+                    marginLeft: 8,
+                    background: '#ef4444',
+                    color: '#fff',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    padding: '3px 8px',
+                    borderRadius: 999,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {pendingCount === 1 ? '1' : `+${pendingCount}`}
+                </span>
+              )}
             </Link>
           ))}
         </div>
