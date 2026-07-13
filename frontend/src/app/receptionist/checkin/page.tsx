@@ -37,7 +37,9 @@ export default function CheckInPage() {
     setError('');
     try {
       const { data } = await api.get(`/dashboard/schedule?date=${today}`);
-      const confirmed = (data as Booking[]).filter((b) => b.status === 'confirmed');
+      // Response shape: { bookings, blockedPeriods }; fall back to old plain array
+      const schedule: Booking[] = Array.isArray(data) ? data : (data?.bookings ?? []);
+      const confirmed = schedule.filter((b) => b.status === 'confirmed');
       setBookings(confirmed);
     } catch (err: unknown) {
       const axErr = err as { response?: { data?: { message?: string } } };

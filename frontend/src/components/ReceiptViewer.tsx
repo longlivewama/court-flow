@@ -14,9 +14,16 @@ interface ReceiptViewerProps {
   bookingId: string;
   /** Max preview height in px (default 220) */
   maxHeight?: number;
+  /**
+   * Whether a receipt exists for this booking (e.g. `has_receipt` from
+   * GET /bookings/:id). Pass `false` to skip the fetch entirely — it would
+   * be a guaranteed 404. Omit when unknown; the viewer will fetch and
+   * handle a 404 itself.
+   */
+  exists?: boolean;
 }
 
-export function ReceiptViewer({ bookingId, maxHeight = 220 }: ReceiptViewerProps) {
+export function ReceiptViewer({ bookingId, maxHeight = 220, exists }: ReceiptViewerProps) {
   const [url, setUrl]         = useState<string | null>(null);
   const [mime, setMime]       = useState('');
   const [loading, setLoading] = useState(true);
@@ -43,12 +50,18 @@ export function ReceiptViewer({ bookingId, maxHeight = 220 }: ReceiptViewerProps
       }
     }
 
-    load();
+    if (exists === false) {
+      setLoading(false);
+      setMissing(true);
+      setUrl(null);
+    } else {
+      load();
+    }
     return () => {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [bookingId]);
+  }, [bookingId, exists]);
 
   if (loading) {
     return <div className="skeleton" style={{ height: Math.min(maxHeight, 140), borderRadius: 10 }} />;

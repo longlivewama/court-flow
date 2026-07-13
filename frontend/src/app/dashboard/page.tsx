@@ -175,7 +175,11 @@ export default function DashboardPage() {
           api.get(`/dashboard/schedule?date=${today}`),
           api.get('/bookings?status=pending_verification&limit=5'),
         ]);
-        const schedule: TodayBooking[] = schedRes.data;
+        // Response shape: { bookings, blockedPeriods }; fall back to old plain array
+        const schedData = schedRes.data;
+        const schedule: TodayBooking[] = Array.isArray(schedData)
+          ? schedData
+          : (schedData?.bookings ?? []);
         setBookings(schedule.slice(0, 8));
         setStats({
           todayBookings:  schedule.length,
