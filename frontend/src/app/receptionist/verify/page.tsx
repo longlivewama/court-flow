@@ -9,7 +9,7 @@
  */
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle, XCircle, Eye, Wallet, CreditCard } from 'lucide-react';
+import { CheckCircle, XCircle, Eye, Wallet, CreditCard, Phone, Clock } from 'lucide-react';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
@@ -20,7 +20,9 @@ const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
 interface PendingBooking {
   id: string; first_name: string; last_name: string; customer_email: string;
-  court_name: string; start_time: string; deposit_amount: number; total_price: number;
+  customer_phone?: string | null;
+  court_name: string; start_time: string; end_time: string; duration_minutes: number;
+  deposit_amount: number; total_price: number;
   deposit_method: string; remainder_amount: number; deposit_status: string;
   payment_id: string;
 }
@@ -28,6 +30,10 @@ interface PendingBooking {
 function methodLabel(m?: string) {
   if (!m || m === 'NONE') return 'Not specified';
   return m.replace(/_/g, ' ');
+}
+
+function egp(n: number | string) {
+  return `EGP ${Number(n).toFixed(2)}`;
 }
 
 export default function VerifyPage() {
@@ -140,32 +146,73 @@ export default function VerifyPage() {
                 style={{ display: 'flex', alignItems: 'stretch', gap: 20, padding: '18px 20px', flexWrap: 'wrap' }}
               >
                 {/* ── Left: booking + self-reported payment metadata ── */}
-                <div style={{ flex: '1 1 260px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ flex: '1 1 280px', display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div>
                     <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 14 }}>
                       {b.first_name} {b.last_name}
+                    </div>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      fontSize: 12, color: 'var(--text-secondary)', marginTop: 4,
+                      fontFamily: 'var(--font-mono)',
+                    }}>
+                      <Phone size={12} style={{ flexShrink: 0, opacity: 0.7 }} />
+                      {b.customer_phone || 'No phone on file'}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
                       {b.customer_email}
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 18 }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>{b.court_name}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                        {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'dd/MM HH:mm')}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                        EGP {Number(b.deposit_amount).toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        of EGP {Number(b.total_price).toFixed(2)}
-                      </div>
-                    </div>
+                  {/* Court + full time slot range */}
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{b.court_name}</div>
+                    {(() => {
+                      const start = toZonedTime(new Date(b.start_time), TIMEZONE);
+                      const end   = toZonedTime(new Date(b.end_time), TIMEZONE);
+                      const durationMin = b.duration_minutes
+                        ?? Math.round((end.getTime() - start.getTime()) / 60_000);
+                      return (
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          fontSize: 12, color: 'var(--text-secondary)', marginTop: 3,
+                          fontFamily: 'var(--font-mono)',
+                        }}>
+                          <Clock size={12} style={{ flexShrink: 0, opacity: 0.7 }} />
+                          <span>
+                            {format(start, 'dd/MM/yyyy')} · {format(start, 'HH:mm')} - {format(end, 'HH:mm')}
+                          </span>
+                          <span style={{ color: 'var(--text-tertiary)' }}>({durationMin} min)</span>
+                        </div>
+                      );
+                    })()}
                   </div>
+
+                  {/* Financial breakdown */}
+                  {(() => {
+                    const total     = Number(b.total_price);
+                    const paid      = Number(b.deposit_amount) + Number(b.remainder_amount || 0);
+                    const remaining = Math.max(total - paid, 0);
+                    const rows: [string, string, string][] = [
+                      ['Total Price',       egp(total),     'var(--text-primary)'],
+                      ['Amount Paid',       egp(paid),      '#22c55e'],
+                      ['Remaining Balance', egp(remaining), remaining > 0 ? '#f59e0b' : 'var(--text-tertiary)'],
+                    ];
+                    return (
+                      <div style={{
+                        background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                        borderRadius: 10, padding: '10px 14px',
+                        display: 'flex', flexDirection: 'column', gap: 6,
+                      }}>
+                        {rows.map(([label, value, color]) => (
+                          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{label}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color, fontFamily: 'var(--font-mono)' }}>{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
 
                   {/* Self-reported payment chips */}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 'auto' }}>
