@@ -21,7 +21,7 @@ export interface CreateBookingInput {
   createdBy:       string;
   createdByRole:   string;
   startTime:       Date;
-  durationMinutes: 60 | 90 | 120;
+  durationMinutes: number;
   notes?:          string;
   discountAmount?: number;
   depositAmount?:  number;
