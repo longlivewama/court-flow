@@ -32,7 +32,19 @@ interface Customer {
   phone?: string;
 }
 
-const DURATION_OPTIONS = [60, 90, 120];
+// Bookings are whole-hour blocks: start/end dropdowns only offer :00
+// options, and a booking can span up to MAX_BOOKING_HOURS consecutive
+// hours (wrapping past midnight into the next day).
+const MAX_BOOKING_HOURS = 12;
+
+/** 0-based hour (may exceed 23 when wrapping past midnight) → "hh:00 AM/PM" */
+function hourLabel(rawHour: number): string {
+  const h24      = rawHour % 24;
+  const ampm     = h24 >= 12 ? 'PM' : 'AM';
+  const displayH = h24 % 12 === 0 ? 12 : h24 % 12;
+  const suffix   = h24 === 0 ? ' (Midnight)' : h24 === 12 ? ' (Noon)' : '';
+  return `${String(displayH).padStart(2, '0')}:00 ${ampm}${suffix}`;
+}
 
 // ── Customer search dropdown ──────────────────────────────────────────────────
 interface CustomerPickerProps {
@@ -231,11 +243,13 @@ function BookCourtForm() {
   const [customerName, setCustomerName]   = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
 
-  // Schedule state
-  const [date, setDate]       = useState(prefillDate ?? format(new Date(), 'yyyy-MM-dd'));
-  const [hour, setHour]       = useState(prefillHour !== null ? parseInt(prefillHour, 10) || 0 : 9);
-  const [minute, setMinute]   = useState(0);
-  const [duration, setDuration] = useState(60);
+  // Schedule state – whole-hour blocks only (minutes locked to :00).
+  // `endHourRaw` may exceed 23 when the booking wraps past midnight
+  // (e.g. start 21 → end 25 means 01:00 AM the next day).
+  const initialHour = prefillHour !== null ? parseInt(prefillHour, 10) || 0 : 9;
+  const [date, setDate]             = useState(prefillDate ?? format(new Date(), 'yyyy-MM-dd'));
+  const [hour, setHour]             = useState(initialHour);
+  const [endHourRaw, setEndHourRaw] = useState(initialHour + 1);
 
   // Payment state (staff-only)
   const [depositAmount, setDepositAmount] = useState(0);
@@ -268,6 +282,16 @@ function BookCourtForm() {
   useEffect(() => { loadCourts(); }, [loadCourts]);
 
   // ── Derived values ────────────────────────────────────────────
+  const duration = (endHourRaw - hour) * 60; // whole-hour blocks → always a multiple of 60
+
+  // Changing the start time preserves the chosen span (e.g. a 3-hour
+  // booking stays 3 hours), so the end dropdown never goes stale.
+  function handleStartHourChange(newHour: number) {
+    const spanHours = endHourRaw - hour;
+    setHour(newHour);
+    setEndHourRaw(newHour + spanHours);
+  }
+
   const selectedCourtObj = courts.find((c) => c.id === selectedCourt);
   const totalPrice = selectedCourtObj
     ? (selectedCourtObj.price_per_hour * duration) / 60
@@ -311,7 +335,7 @@ function BookCourtForm() {
 
   // String literal → fromZonedTime treats it as Cairo wall-clock time.
   const startDateTime = fromZonedTime(
-    `${cairoCalendarDate}T${pad(hour)}:${pad(minute)}:00`,
+    `${cairoCalendarDate}T${pad(hour)}:00:00`,
     TIMEZONE
   );
   const endDateTime = addMinutes(startDateTime, duration);
@@ -342,6 +366,9 @@ function BookCourtForm() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedCourt) return setError('Please select a court');
+    if (duration < 60 || duration % 60 !== 0) {
+      return setError('End time must be at least one full hour after the start time.');
+    }
     if (isStaff && (!customerName.trim() || !customerPhone.trim())) {
       return setError('Please provide customer name and phone');
     }
@@ -556,58 +583,40 @@ function BookCourtForm() {
                 />
               </div>
 
-              {/* ── Time ───────────────────────────────────────── */}
-              <div>
-                <label className="label">
-                  <Clock size={13} style={{ display: 'inline', marginRight: 5 }} />
-                  Start Time
-                </label>
-                <div style={{ display: 'flex', gap: 10 }}>
+              {/* ── Time (whole-hour blocks) ───────────────────── */}
+              <div style={{ display: 'flex', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="label" htmlFor="start-time">
+                    <Clock size={13} style={{ display: 'inline', marginRight: 5 }} />
+                    Start Time
+                  </label>
                   <select
+                    id="start-time"
                     className="input"
                     value={hour}
-                    onChange={(e) => setHour(parseInt(e.target.value, 10) || 0)}
-                    aria-label="Hour"
+                    onChange={(e) => handleStartHourChange(parseInt(e.target.value, 10) || 0)}
+                    aria-label="Start time"
                   >
-                    {Array.from({ length: 24 }, (_, i) => i).map((h) => {
-                      const displayH = h % 12 === 0 ? 12 : h % 12;
-                      const ampm     = h >= 12 ? 'PM' : 'AM';
-                      const suffix   = h === 0 ? ' (Midnight)' : h === 12 ? ' (Noon)' : '';
-                      return (
-                        <option key={h} value={h}>
-                          {String(displayH).padStart(2, '0')}:00 {ampm}{suffix}
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <select
-                    className="input"
-                    value={minute}
-                    onChange={(e) => setMinute(parseInt(e.target.value, 10) || 0)}
-                    aria-label="Minute"
-                    style={{ maxWidth: 90 }}
-                  >
-                    <option value={0}>:00</option>
-                    <option value={30}>:30</option>
+                    {Array.from({ length: 24 }, (_, i) => i).map((h) => (
+                      <option key={h} value={h}>{hourLabel(h)}</option>
+                    ))}
                   </select>
                 </div>
-              </div>
-
-              {/* ── Duration ───────────────────────────────────── */}
-              <div>
-                <label className="label">Duration</label>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {DURATION_OPTIONS.map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      className={`btn ${duration === d ? 'btn-primary' : 'btn-ghost'} btn-sm`}
-                      onClick={() => setDuration(d)}
-                      aria-pressed={duration === d}
-                    >
-                      {d} min
-                    </button>
-                  ))}
+                <div style={{ flex: 1 }}>
+                  <label className="label" htmlFor="end-time">End Time</label>
+                  <select
+                    id="end-time"
+                    className="input"
+                    value={endHourRaw}
+                    onChange={(e) => setEndHourRaw(parseInt(e.target.value, 10) || hour + 1)}
+                    aria-label="End time"
+                  >
+                    {Array.from({ length: MAX_BOOKING_HOURS }, (_, i) => hour + i + 1).map((raw) => (
+                      <option key={raw} value={raw}>
+                        {hourLabel(raw)}{raw >= 24 ? ' (next day)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -771,7 +780,7 @@ function BookCourtForm() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
                     <span style={{ color: 'var(--text-secondary)' }}>Duration</span>
-                    <span>{duration} minutes</span>
+                    <span>{duration / 60} {duration === 60 ? 'hour' : 'hours'} ({duration} minutes)</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 600, marginTop: 4 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>

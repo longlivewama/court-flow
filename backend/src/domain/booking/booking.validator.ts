@@ -3,7 +3,7 @@
  * Server-side validation algorithm as specified in SRS §8.4, §10, and §14.
  *
  * Checks (in order):
- *   1. Duration is allowed (60, 90, or 120 min)
+ *   1. Duration is allowed (1–12 hours; 30-min granularity kept for legacy bookings)
  *   2. Court exists and status is 'available'
  *   3. Slot fits within the club's configured working hours (clients only)
  *      → SKIPPED for Admin / Staff / Receptionist (bypassWorkingHours = true)
@@ -23,14 +23,19 @@ import { PoolClient } from 'pg';
 import { ValidationError, ConflictError } from '../../shared/errors';
 
 const CLUB_TIMEZONE = 'Africa/Cairo';
-const ALLOWED_DURATIONS = [60, 90, 120] as const;
+// Whole-hour blocks between 1 and 12 hours. Granularity stays at 30 min
+// (rather than 60) so legacy 90-minute bookings can still be revalidated
+// when rescheduled; the booking form only produces whole-hour durations.
+const MIN_DURATION_MINUTES = 60;
+const MAX_DURATION_MINUTES = 720;
+const DURATION_STEP_MINUTES = 30;
 const MINUTES_PER_DAY = 24 * 60;
 
 export interface ValidateBookingParams {
   clubId:             string;
   courtId:            string;
   startTime:          Date;   // UTC
-  durationMinutes:    60 | 90 | 120;
+  durationMinutes:    number;
   excludeBookingId?:  string;   // for rescheduling
   /**
    * When true the working-hours gate is completely skipped.
@@ -49,9 +54,14 @@ export async function validateBookingSlot(
   const endTime = addMinutes(startTime, durationMinutes);
 
   // ── 1. Duration check ─────────────────────────────────────
-  if (!(ALLOWED_DURATIONS as readonly number[]).includes(durationMinutes)) {
+  if (
+    !Number.isInteger(durationMinutes) ||
+    durationMinutes < MIN_DURATION_MINUTES ||
+    durationMinutes > MAX_DURATION_MINUTES ||
+    durationMinutes % DURATION_STEP_MINUTES !== 0
+  ) {
     throw new ValidationError(
-      `Duration must be one of: ${ALLOWED_DURATIONS.join(', ')} minutes`
+      `Duration must be between 1 and ${MAX_DURATION_MINUTES / 60} hours`
     );
   }
 
