@@ -13,6 +13,34 @@ import { ValidationError, NotFoundError } from '../../shared/errors';
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
 const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB ?? '10') * 1024 * 1024;
 
+/**
+ * Detect the true file type from the buffer's magic bytes. The client-declared
+ * MIME (multipart Content-Type) is fully attacker-controlled and must never be
+ * trusted on its own — a shell script sent as `Content-Type: image/png` would
+ * otherwise pass. Returns the detected MIME, or null if it matches none of the
+ * allowed signatures.
+ */
+function sniffMime(buf: Buffer): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  // '%PDF-'
+  if (
+    buf.length >= 5 &&
+    buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2d
+  ) {
+    return 'application/pdf';
+  }
+  return null;
+}
+
 export interface UploadReceiptInput {
   bookingId:   string;
   customerId:  string;
@@ -30,6 +58,15 @@ export async function uploadReceipt(input: UploadReceiptInput): Promise<void> {
   if (!ALLOWED_MIME_TYPES.includes(input.fileMime)) {
     throw new ValidationError(
       `Invalid file type. Allowed: JPEG, PNG, PDF. Received: ${input.fileMime}`
+    );
+  }
+  // Content-based check: verify the actual bytes match an allowed signature and
+  // agree with the declared type. Defeats MIME spoofing (e.g. a .sh uploaded as
+  // image/png).
+  const detected = sniffMime(input.fileBuffer);
+  if (!detected || detected !== input.fileMime) {
+    throw new ValidationError(
+      'File content does not match its declared type. Allowed: JPEG, PNG, PDF.'
     );
   }
   if (input.fileSize > MAX_FILE_SIZE) {

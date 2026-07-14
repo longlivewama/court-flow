@@ -23,12 +23,12 @@ import { PoolClient } from 'pg';
 import { ValidationError, ConflictError } from '../../shared/errors';
 
 const CLUB_TIMEZONE = 'Africa/Cairo';
-// Whole-hour blocks between 1 and 12 hours. Granularity stays at 30 min
-// (rather than 60) so legacy 90-minute bookings can still be revalidated
-// when rescheduled; the booking form only produces whole-hour durations.
+// Whole-hour blocks between 1 and 12 hours. The step is 60 minutes so the API
+// strictly enforces the whole-hour booking rule — half-hour durations (e.g. 90
+// or 150 minutes) are rejected even when the request bypasses the front-end.
 const MIN_DURATION_MINUTES = 60;
 const MAX_DURATION_MINUTES = 720;
-const DURATION_STEP_MINUTES = 30;
+const DURATION_STEP_MINUTES = 60;
 const MINUTES_PER_DAY = 24 * 60;
 
 export interface ValidateBookingParams {
@@ -61,7 +61,7 @@ export async function validateBookingSlot(
     durationMinutes % DURATION_STEP_MINUTES !== 0
   ) {
     throw new ValidationError(
-      `Duration must be between 1 and ${MAX_DURATION_MINUTES / 60} hours`
+      `Duration must be a whole number of hours between 1 and ${MAX_DURATION_MINUTES / 60}`
     );
   }
 

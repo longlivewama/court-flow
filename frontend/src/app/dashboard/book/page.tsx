@@ -369,6 +369,11 @@ function BookCourtForm() {
     if (duration < 60 || duration % 60 !== 0) {
       return setError('End time must be at least one full hour after the start time.');
     }
+    // Customers cannot book a slot whose start time has already passed
+    // (mirrors the server-side guard in create-booking.usecase.ts).
+    if (!isStaff && startDateTime.getTime() < Date.now()) {
+      return setError('Start time must be in the future.');
+    }
     if (isStaff && (!customerName.trim() || !customerPhone.trim())) {
       return setError('Please provide customer name and phone');
     }
