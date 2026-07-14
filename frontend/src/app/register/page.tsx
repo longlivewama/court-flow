@@ -7,6 +7,16 @@ import { api } from '@/lib/api';
 
 const SPRING = { type: 'spring' as const, stiffness: 360, damping: 28 };
 
+// Mirrors the server-side password policy (auth.controller.ts) so users get
+// immediate feedback instead of a round-trip 400.
+const PASSWORD_HINT = 'At least 8 characters, including a letter and a number.';
+function passwordError(pw: string): string | null {
+  if (pw.length < 8) return 'Password must be at least 8 characters.';
+  if (!/[A-Za-z]/.test(pw)) return 'Password must contain at least one letter.';
+  if (!/[0-9]/.test(pw)) return 'Password must contain at least one number.';
+  return null;
+}
+
 export default function RegisterPage() {
   const router = useRouter();
   const [form, setForm] = useState({
@@ -24,6 +34,10 @@ export default function RegisterPage() {
     e.preventDefault();
     setError('');
     setMessage('');
+
+    const pwErr = passwordError(form.password);
+    if (pwErr) { setError(pwErr); return; }
+
     setLoading(true);
 
     try {
@@ -131,8 +145,12 @@ export default function RegisterPage() {
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
               autoComplete="new-password"
+              minLength={8}
               required
             />
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+              {PASSWORD_HINT}
+            </p>
           </div>
 
           {error && (

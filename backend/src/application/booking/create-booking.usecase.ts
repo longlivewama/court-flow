@@ -13,6 +13,7 @@ import { validateBookingSlot } from '../../domain/booking/booking.validator';
 import { assertTransition, assertPaymentTransition } from '../../domain/booking/booking.state-machine';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
+import { ValidationError } from '../../shared/errors';
 
 export interface CreateBookingInput {
   clubId:          string;
@@ -71,6 +72,13 @@ export async function createBooking(
       [input.courtId]
     );
     const { price_per_slot } = courtRows[0];
+
+    // ── Reject past-dated customer bookings ────────────────────
+    // A customer must not be able to self-book a slot whose start time has
+    // already passed. Staff keep the ability to record retroactive walk-ins.
+    if (input.createdByRole === 'customer' && input.startTime.getTime() < Date.now()) {
+      throw new ValidationError('Start time must be in the future.');
+    }
 
     // ── Validate slot (working hours, status, conflicts) ───────
     // Bypass the working-hours gate for all non-customer roles so that

@@ -13,21 +13,46 @@ import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.ser
 import { ValidationError, UnauthorizedError, NotFoundError } from '../../../shared/errors';
 import { logger } from '../../../shared/logger';
 import { withTransaction } from '../../../infrastructure/database/client';
+import { z } from 'zod';
 
 const CLUB_ID = process.env.CLUB_ID!;
 const LOCKOUT_ATTEMPTS = 5;
 const LOCKOUT_MINUTES  = 15;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// ── Input schemas ─────────────────────────────────────────────
+// Guards the auth entry points: a missing/malformed body now yields a clean
+// 400 (Zod → VALIDATION_ERROR via the error middleware) instead of an
+// unhandled TypeError → 500.
+const PASSWORD_POLICY = z
+  .string()
+  .min(8, 'Password must be at least 8 characters')
+  .max(128, 'Password must be at most 128 characters')
+  .regex(/[A-Za-z]/, 'Password must contain at least one letter')
+  .regex(/[0-9]/, 'Password must contain at least one number');
+
+const registerSchema = z.object({
+  email:     z.string().trim().toLowerCase().email('A valid email is required'),
+  password:  PASSWORD_POLICY,
+  firstName: z.string().trim().min(1, 'First name is required').max(80),
+  lastName:  z.string().trim().min(1, 'Last name is required').max(80),
+  phone:     z.string().trim().max(32).optional(),
+});
+
+const loginSchema = z.object({
+  email:    z.string().trim().toLowerCase().email('A valid email is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
 // ── POST /api/auth/register ───────────────────────────────────
 export async function register(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, password, firstName, lastName, phone } = req.body;
+    const { email, password, firstName, lastName, phone } = registerSchema.parse(req.body);
 
     // Check email uniqueness
     const { rows: existing } = await db.query(
       `SELECT id FROM users WHERE club_id=$1 AND email=$2`,
-      [CLUB_ID, email.toLowerCase()]
+      [CLUB_ID, email]
     );
     if (existing.length) {
       throw new ValidationError('An account with this email already exists');
@@ -107,7 +132,7 @@ export async function verifyEmail(req: Request, res: Response, next: NextFunctio
 // ── POST /api/auth/login ──────────────────────────────────────
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, password } = req.body;
+    const { email, password } = loginSchema.parse(req.body);
 
     const { rows } = await db.query<{
       id: string; password_hash: string; role: string; first_name: string;
@@ -115,7 +140,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
     }>(
       `SELECT id,password_hash,role,first_name,email_verified,is_active,failed_login_attempts,locked_until
        FROM users WHERE club_id=$1 AND email=$2`,
-      [CLUB_ID, email.toLowerCase()]
+      [CLUB_ID, email]
     );
 
     // Generic error to prevent user enumeration

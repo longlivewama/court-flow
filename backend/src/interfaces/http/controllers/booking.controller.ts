@@ -142,7 +142,11 @@ export async function getFinancialSummary(req: Request, res: Response, next: Nex
        FROM bookings
        WHERE club_id = $1
          AND ${logicalDateExpr} BETWEEN ${fromExpr} AND ${toExpr}
-         AND status NOT IN ('cancelled','expired')`,
+         -- Only count STAFF-VERIFIED payments. Customer self-reported amounts on
+         -- unverified bookings (draft / pending_deposit / pending_verification) must
+         -- never inflate revenue. no_show is included because its deposit was
+         -- genuinely collected and is forfeited (real income).
+         AND status IN ('confirmed','checked_in','completed','no_show')`,
       finalParams
     );
 
@@ -616,7 +620,9 @@ export async function getAnalyticsPlots(
          COALESCE(SUM(remainder_amount) FILTER (WHERE remainder_method = 'INSTAPAY'), 0)::numeric AS instapay
        FROM bookings
        WHERE club_id = $1
-         AND status  NOT IN ('cancelled', 'expired')
+         -- Verified payments only (see getFinancialSummary): exclude unverified
+         -- customer self-reports so the analytics cash-split reflects real income.
+         AND status  IN ('confirmed', 'checked_in', 'completed', 'no_show')
          AND created_at >= NOW() - ($2 || ' days')::interval`,
       [CLUB_ID, rangeDays]
     );
