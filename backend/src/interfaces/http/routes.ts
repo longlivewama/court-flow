@@ -21,6 +21,8 @@ import * as financeCtrl      from './controllers/finance.controller';
 import * as tournamentCtrl   from './controllers/tournament.controller';
 import * as coachingCtrl     from './controllers/coaching.controller';
 import * as lostFoundCtrl    from './controllers/lostfound.controller';
+import * as webhookCtrl      from './controllers/payment-webhook.controller';
+import * as waitlistCtrl     from './controllers/waitlist.controller';
 
 export function registerRoutes(app: Express): void {
   // ── Health check ────────────────────────────────────────────
@@ -61,11 +63,25 @@ export function registerRoutes(app: Express): void {
   subscriptions.patch('/:id/revoke',  requireRole('owner'), subscriptionCtrl.revokeSubscription);
   app.use('/api/subscriptions', subscriptions);
 
+  // ── Payment gateway webhook ───────────────────────────────────
+  // Unauthenticated by design (the gateway has no user session); secured by
+  // HMAC signature + replay window + idempotency inside the handler. Must be
+  // registered BEFORE the authenticated /api/payments router below.
+  app.post('/api/payments/webhook', webhookCtrl.handlePaymentWebhook);
+
   // ── Payments ledger ───────────────────────────────────────────
   const payments = Router();
   payments.use(authenticate, requireRole('receptionist', 'owner'));
   payments.get('/', paymentCtrl.listPayments);
   app.use('/api/payments', payments);
+
+  // ── Waitlist (anti-scalping) ──────────────────────────────────
+  const waitlist = Router();
+  waitlist.use(authenticate);
+  waitlist.post('/',      requireRole('customer'), waitlistCtrl.joinWaitlist);
+  waitlist.get('/me',     requireRole('customer'), waitlistCtrl.myWaitlist);
+  waitlist.delete('/:id', requireRole('customer'), waitlistCtrl.leaveWaitlist);
+  app.use('/api/waitlist', waitlist);
 
   // ── Analytics (owner only) ────────────────────────────────────
   const analytics = Router();

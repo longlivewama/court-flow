@@ -4,7 +4,9 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { randomBytes, createHash } from 'crypto';
 import { createBooking } from '../../../application/booking/create-booking.usecase';
+import { isPrimeTime, WAITLIST_HOLD_MINUTES } from '../../../domain/booking/prime-time';
 import { uploadReceipt } from '../../../application/booking/upload-receipt.usecase';
 import { verifyDeposit } from '../../../application/booking/verify-deposit.usecase';
 import { deleteBooking } from '../../../application/booking/delete-booking.usecase';
@@ -198,6 +200,9 @@ const createBookingSchema = z.object({
   payment_method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   adminNotes: z.string().optional(),
   admin_notes: z.string().optional(),
+  // Single-use claim token for a waitlist slot hold (anti-scalping flow)
+  waitlistToken: z.string().max(128).optional(),
+  waitlist_token: z.string().max(128).optional(),
   // Rental add-ons: [{ equipmentId, quantity }]
   equipment: z.array(z.object({
     equipmentId:  z.string().optional(),
@@ -285,6 +290,7 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
       // is a customer, regardless of what the request body contained.
       adminNotes:      role === 'customer' ? null : (parsed.adminNotes ?? parsed.admin_notes ?? null),
       processedById:   userId,
+      waitlistToken:   parsed.waitlistToken ?? parsed.waitlist_token,
       ipAddress:       req.ip,
       deviceInfo:      req.headers['user-agent']
     });
@@ -471,11 +477,20 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
   try {
     const { reason } = req.body;
 
+    // Populated inside the transaction when a prime-time cancellation issues
+    // a waitlist hold; the offer email goes out only after the txn commits.
+    interface HoldOffer {
+      to: string; firstName: string; courtName: string;
+      startTime: Date; token: string; expiresAt: Date;
+    }
+    let holdOffer: HoldOffer | null = null;
+
     await withTransaction(async (client) => {
       const { rows } = await client.query<{
         id: string; status: string; customer_id: string; start_time: Date;
+        end_time: Date; court_id: string;
       }>(
-        `SELECT id,status,customer_id,start_time FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
+        `SELECT id,status,customer_id,start_time,end_time,court_id FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
         [req.params.id, CLUB_ID]
       );
       if (!rows.length) throw new NotFoundError('Booking', req.params.id);
@@ -504,6 +519,72 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         [booking.id, reason ?? null]
       );
 
+      // ── ANTI-SCALPING interceptor ─────────────────────────────────────
+      // A cancelled prime-time slot must not drop straight into the public
+      // pool where a scraping bot re-books it instantly. Instead, the top
+      // (FIFO) matching waitlist entry gets an exclusive hold: a single-use
+      // claim token (only its SHA-256 stored) valid for a short window.
+      // create-booking rejects everyone else for that slot until the hold
+      // expires; the token holder claims it via the normal booking flow.
+      const slotIsUpcoming = new Date(booking.start_time).getTime() > Date.now();
+      if (slotIsUpcoming && isPrimeTime(new Date(booking.start_time))) {
+        const { rows: topEntry } = await client.query<{
+          id: string; user_id: string; email: string; first_name: string;
+        }>(
+          `SELECT w.id, w.user_id, u.email, u.first_name
+           FROM waitlist_entries w
+           JOIN users u ON u.id = w.user_id
+           WHERE w.club_id = $1
+             AND w.fulfilled_at IS NULL
+             AND (w.court_id IS NULL OR w.court_id = $2)
+             AND w.desired_start < $4::timestamptz
+             AND w.desired_end   > $3::timestamptz
+             AND w.user_id <> $5              -- the canceller can't waitlist-snipe their own slot
+           ORDER BY w.created_at
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED`,
+          [CLUB_ID, booking.court_id, booking.start_time, booking.end_time, booking.customer_id]
+        );
+
+        if (topEntry.length) {
+          const entry     = topEntry[0];
+          const token     = randomBytes(24).toString('hex');
+          const tokenHash = createHash('sha256').update(token).digest('hex');
+          const expiresAt = new Date(Date.now() + WAITLIST_HOLD_MINUTES * 60 * 1000);
+
+          const { rows: holdRows } = await client.query<{ id: string }>(
+            `INSERT INTO slot_holds (club_id, court_id, user_id, start_time, end_time, token_hash, expires_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+            [CLUB_ID, booking.court_id, entry.user_id, booking.start_time, booking.end_time, tokenHash, expiresAt]
+          );
+          await client.query(
+            `UPDATE waitlist_entries SET fulfilled_at = NOW() WHERE id = $1`,
+            [entry.id]
+          );
+
+          await auditLog({
+            clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+            ipAddress: req.ip, actionType: AUDIT_ACTIONS.SLOT_HOLD_CREATED,
+            entityType: 'slot_hold', entityId: holdRows[0].id,
+            newValues: {
+              waitlistEntryId: entry.id, heldFor: entry.user_id,
+              courtId: booking.court_id, startTime: booking.start_time,
+              expiresAt: expiresAt.toISOString(), cancelledBookingId: booking.id,
+            },
+            reason: 'Prime-time cancellation routed to the waitlist instead of the public pool',
+          });
+
+          const { rows: courtRows } = await client.query<{ name: string }>(
+            `SELECT name FROM courts WHERE id = $1`, [booking.court_id]
+          );
+          holdOffer = {
+            to: entry.email, firstName: entry.first_name,
+            courtName: courtRows[0]?.name ?? 'Court',
+            startTime: new Date(booking.start_time), token, expiresAt,
+          };
+        }
+      }
+
       // Load customer email
       const { rows: custRows } = await client.query<{ email: string; first_name: string }>(
         `SELECT email, first_name FROM users WHERE id=$1`, [booking.customer_id]
@@ -527,6 +608,15 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         }
       }
     });
+
+    // Deliver the waitlist offer (with the raw token) only after the hold
+    // has durably committed — best-effort, like every other booking email.
+    const offer: HoldOffer | null = holdOffer;
+    if (offer) {
+      emailService.sendWaitlistSlotOffer(offer).catch(() => {
+        // logged inside the email service after its own retries
+      });
+    }
 
     res.json({ message: 'Booking cancelled successfully' });
   } catch (err) { next(err); }

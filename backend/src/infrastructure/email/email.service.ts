@@ -103,6 +103,29 @@ export const emailService = {
     });
   },
 
+  async sendWaitlistSlotOffer(opts: {
+    to: string; firstName: string; courtName: string;
+    startTime: Date; token: string; expiresAt: Date;
+  }): Promise<void> {
+    const body = `
+      <p>Hi ${opts.firstName}, a slot you waitlisted for just opened up!</p>
+      <div style="margin:20px 0;">
+        <div class="detail-row"><span class="detail-label">Court</span><span class="detail-value">${opts.courtName}</span></div>
+        <div class="detail-row"><span class="detail-label">Date & Time</span><span class="detail-value">${formatDateTime(opts.startTime)}</span></div>
+        <div class="detail-row"><span class="detail-label">Claim Token</span><span class="detail-value">${opts.token}</span></div>
+        <div class="detail-row"><span class="detail-label">Hold Expires</span><span class="detail-value">${formatDateTime(opts.expiresAt)}</span></div>
+      </div>
+      <p>This slot is reserved exclusively for you until the hold expires.
+         Book it and enter the claim token when confirming — after the hold
+         lapses the slot is released to everyone.</p>`;
+    await sendWithRetry({
+      from:    process.env.EMAIL_FROM,
+      to:      opts.to,
+      subject: '⚡ A waitlisted slot just opened for you – CourtFlow',
+      html:    baseTemplate('Your Slot Is Waiting', body),
+    });
+  },
+
   async sendBookingConfirmation(opts: {
     to: string; firstName: string; bookingId: string;
     startTime: Date; depositAmount: number; totalPrice: number;

@@ -7,13 +7,15 @@
  *   - Atomic DB transaction
  *   - Audit logging
  */
+import { createHash } from 'crypto';
 import { PoolClient } from 'pg';
 import { withTransaction } from '../../infrastructure/database/client';
 import { validateBookingSlot } from '../../domain/booking/booking.validator';
 import { assertTransition, assertPaymentTransition } from '../../domain/booking/booking.state-machine';
+import { isPrimeTime, PRIME_TIME_EXPIRY_MINUTES } from '../../domain/booking/prime-time';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
-import { ValidationError } from '../../shared/errors';
+import { ValidationError, ConflictError, ForbiddenError } from '../../shared/errors';
 
 export interface BookingEquipmentLine {
   equipmentId: string;
@@ -38,6 +40,8 @@ export interface CreateBookingInput {
   remainderMethod?: 'INSTAPAY' | 'VODAFONE_CASH' | 'CASH' | 'NONE';
   adminNotes?:     string | null;
   processedById:   string | null;
+  /** Single-use token proving the customer owns an active waitlist hold on this slot */
+  waitlistToken?:  string;
   ipAddress?:      string;
   deviceInfo?:     string;
 }
@@ -88,6 +92,34 @@ export async function createBooking(
       throw new ValidationError('Start time must be in the future.');
     }
 
+    // ── ANTI-LOCKOUT: cap customers to 1 active unpaid booking ─────────
+    // Without this cap, one account can spray pending_deposit bookings across
+    // every court and lock the whole club for the expiry window without ever
+    // paying. The per-customer advisory lock serialises concurrent creates by
+    // the same account (each create locks a different court row, so the court
+    // lock alone cannot stop two parallel requests both passing the count).
+    if (input.createdByRole === 'customer') {
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+        [input.customerId]
+      );
+      const { rows: pendingRows } = await client.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count
+         FROM bookings
+         WHERE customer_id = $1
+           AND club_id = $2
+           AND deleted_at IS NULL
+           AND status = 'pending_deposit'
+           AND end_time > NOW()`,
+        [input.customerId, input.clubId]
+      );
+      if (pendingRows[0].count >= 1) {
+        throw new ConflictError(
+          'You already have a booking awaiting payment. Pay its deposit (or cancel it) before reserving another slot.'
+        );
+      }
+    }
+
     // ── Validate slot (working hours, status, conflicts) ───────
     // Bypass the working-hours gate for all non-customer roles so that
     // owners, receptionists, and staff can book at any hour they choose.
@@ -99,6 +131,44 @@ export async function createBooking(
       durationMinutes:    input.durationMinutes,
       bypassWorkingHours: isAdminRole,
     });
+
+    // ── ANTI-SCALPING: honour active waitlist holds ─────────────────────
+    // A cancelled prime-time slot is held for the top waitlist user for a
+    // short window (see cancelBookingHandler). While a hold is active the
+    // slot is NOT public: only the held user, presenting the single-use
+    // token issued to them, may book it. Everyone else — including bots
+    // polling availability — is rejected until the hold expires.
+    const requestedEnd = new Date(input.startTime.getTime() + input.durationMinutes * 60 * 1000);
+    const { rows: holdRows } = await client.query<{
+      id: string; user_id: string; token_hash: string;
+    }>(
+      `SELECT id, user_id, token_hash
+       FROM slot_holds
+       WHERE court_id = $1
+         AND claimed_at IS NULL
+         AND expires_at > NOW()
+         AND start_time < $3::timestamptz
+         AND end_time   > $2::timestamptz
+       ORDER BY created_at
+       FOR UPDATE`,
+      [input.courtId, input.startTime.toISOString(), requestedEnd.toISOString()]
+    );
+    let claimedHoldId: string | null = null;
+    if (holdRows.length > 0) {
+      const hold = holdRows[0];
+      const presentedHash = input.waitlistToken
+        ? createHash('sha256').update(input.waitlistToken).digest('hex')
+        : null;
+      const isHoldOwner  = hold.user_id === input.customerId;
+      const tokenMatches = presentedHash !== null && presentedHash === hold.token_hash;
+      // Staff may override a hold (walk-in at the desk beats an unclaimed hold)
+      if (!isAdminRole && !(isHoldOwner && tokenMatches)) {
+        throw new ForbiddenError(
+          'This slot is temporarily reserved for a waitlisted member. Try again in a few minutes.'
+        );
+      }
+      if (isHoldOwner && tokenMatches) claimedHoldId = hold.id;
+    }
 
     // ── Equipment rental lines ─────────────────────────────────
     // Each line locks its equipment row, then checks the remaining stock
@@ -228,14 +298,28 @@ export async function createBooking(
         ? 'FULLY_PAID'
         : 'DEPOSIT_PAID';
 
+    // ── ANTI-LOCKOUT: dynamic deposit deadline ──────────────────
+    // The club-wide expiry (default 2h) is generous enough to be abused as a
+    // free hold on the most contested inventory. Prime-time slots (weekends
+    // or weekdays from 17:00, club-local) override it down to 15 minutes —
+    // pay quickly or release the slot. Off-peak keeps the configured window.
+    const { pending_deposit_expiry_minutes } = settingsRows[0];
+    const effectiveExpiryMinutes = isPrimeTime(input.startTime)
+      ? Math.min(PRIME_TIME_EXPIRY_MINUTES, pending_deposit_expiry_minutes)
+      : pending_deposit_expiry_minutes;
+    const expiresAt = initialStatus === 'pending_deposit'
+      ? new Date(Date.now() + effectiveExpiryMinutes * 60 * 1000)
+      : null;
+
     // ── Insert booking ─────────────────────────────────────────
     const { rows: bookingRows } = await client.query<{ id: string }>(
       `INSERT INTO bookings
          (club_id, court_id, customer_id, created_by, status,
           start_time, end_time, duration_minutes,
           total_price, deposit_percent_snap, deposit_amount, remaining_balance, notes,
-          deposit_status, deposit_method, remainder_amount, remainder_method, discount_amount, admin_notes, processed_by_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          deposit_status, deposit_method, remainder_amount, remainder_method, discount_amount, admin_notes, processed_by_id,
+          expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING id`,
       [
         input.clubId,
@@ -257,10 +341,25 @@ export async function createBooking(
         input.remainderMethod ?? 'NONE',
         input.discountAmount ?? 0,
         input.adminNotes ?? null,
-        input.processedById
+        input.processedById,
+        expiresAt ? expiresAt.toISOString() : null,
       ]
     );
     const bookingId = bookingRows[0].id;
+
+    // Consume the waitlist hold atomically with the booking it authorised
+    if (claimedHoldId) {
+      await client.query(
+        `UPDATE slot_holds SET claimed_at = NOW(), booking_id = $2 WHERE id = $1`,
+        [claimedHoldId, bookingId]
+      );
+      await auditLog({
+        clubId: input.clubId, userId: input.createdBy, userRole: input.createdByRole,
+        ipAddress: input.ipAddress, actionType: AUDIT_ACTIONS.SLOT_HOLD_CLAIMED,
+        entityType: 'slot_hold', entityId: claimedHoldId,
+        newValues: { bookingId },
+      });
+    }
 
     // ── Insert equipment rental lines ──────────────────────────
     for (const line of equipmentLines) {

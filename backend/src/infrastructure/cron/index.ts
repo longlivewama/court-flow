@@ -41,6 +41,9 @@ async function runExpirePendingJob(): Promise<void> {
     }>(`SELECT id, pending_deposit_expiry_minutes FROM clubs`);
 
     for (const club of clubs) {
+      // expires_at is the per-booking deadline (prime-time bookings carry a
+      // tighter 15-minute window — see create-booking.usecase.ts). Legacy
+      // rows without one fall back to the club's static window.
       const { rows: expiredBookings } = await db.query<{
         id: string;
         customer_id: string;
@@ -50,7 +53,7 @@ async function runExpirePendingJob(): Promise<void> {
          SET status = 'expired', expired_at = NOW(), updated_at = NOW()
          WHERE club_id = $1
            AND status = 'pending_deposit'
-           AND created_at < NOW() - ($2 || ' minutes')::INTERVAL
+           AND COALESCE(expires_at, created_at + ($2 || ' minutes')::INTERVAL) < NOW()
          RETURNING id, customer_id, court_id`,
         [club.id, club.pending_deposit_expiry_minutes]
       );
@@ -119,7 +122,7 @@ async function runExpireStalledBookingsJob(): Promise<void> {
          SET status = 'expired', expired_at = NOW(), updated_at = NOW()
          WHERE club_id = $1
            AND status = 'pending_deposit'
-           AND created_at < NOW() - ($2 || ' minutes')::INTERVAL
+           AND COALESCE(expires_at, created_at + ($2 || ' minutes')::INTERVAL) < NOW()
          RETURNING id, customer_id, court_id`,
         [club.id, club.pending_deposit_expiry_minutes]
       );
