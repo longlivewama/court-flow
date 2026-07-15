@@ -119,7 +119,20 @@ export async function createBooking(
     }
     const equipmentLines: ResolvedEquipmentLine[] = [];
 
-    for (const line of input.equipment ?? []) {
+    // ── Deadlock prevention: acquire equipment locks in a strict global order ──
+    // Two concurrent bookings renting the same items in *different* request
+    // order (A locks racket→balls while B locks balls→racket) form a circular
+    // wait, and Postgres kills one with "deadlock detected". Sorting the lines
+    // by equipment UUID before locking imposes one total order on lock
+    // acquisition: any transaction that waits does so only for a lock with an
+    // ID ≥ every lock it already holds, so a wait-for cycle would require an
+    // ID strictly greater than itself — impossible. Every code path that locks
+    // multiple equipment rows must preserve this ascending-ID invariant.
+    const requestedLines = [...(input.equipment ?? [])].sort((a, b) =>
+      a.equipmentId < b.equipmentId ? -1 : a.equipmentId > b.equipmentId ? 1 : 0
+    );
+
+    for (const line of requestedLines) {
       if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
         throw new ValidationError('Equipment quantity must be a positive integer');
       }
