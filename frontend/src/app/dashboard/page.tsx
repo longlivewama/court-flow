@@ -1,31 +1,46 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
-import { motion } from 'framer-motion';
+/**
+ * Dashboard (screen 5.5) — staff home.
+ *
+ *   · KPI metrics row (today's bookings, revenue, pending verification, confirmed)
+ *   · 14-day bookings trend (area line, single green series)
+ *   · "Top Courts" donut — bookings split per court, categorical identity colors
+ *   · Recent bookings table → opens the Booking Details panel
+ *   · "New Booking" → opens the New Booking slide-over
+ */
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  Calendar, CheckCircle, Clock, AlertCircle,
-  Banknote, Smartphone, Percent, TrendingUp,
-  RefreshCw, BarChart2, PieChart as PieChartIcon
+  CalendarPlus, CalendarCheck, Banknote, ShieldAlert, CheckCircle2,
 } from 'lucide-react';
-import { api } from '@/lib/api';
-import { useAuthStore } from '@/lib/stores/auth.store';
-import { StateChip } from '@/components/StateChip';
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip,
+  CartesianGrid, PieChart, Pie, Cell,
+} from 'recharts';
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
-import type { FinancialSummary, AnalyticsPlot, PaymentDistributionSlice } from '@/lib/schemas';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { api } from '@/lib/api';
+import { useAuthStore } from '@/lib/stores/auth.store';
+import { StateChip, BookingStatus } from '@/components/StateChip';
+import { NewBookingPanel } from '@/components/NewBookingPanel';
+import { BookingDetailsPanel } from '@/components/BookingDetailsPanel';
+import { catColor, SERIES_GREEN } from '@/lib/chartColors';
+import type { FinancialSummary } from '@/lib/schemas';
 
-const TIMEZONE  = 'Africa/Cairo';
-const SPRING    = { type: 'spring' as const, stiffness: 320, damping: 28 };
+const TIMEZONE = 'Africa/Cairo';
+const TREND_DAYS = 14;
 
-interface DashboardStats {
-  todayBookings:   number;
-  pendingVerify:   number;
-  confirmedToday:  number;
-  noshowToday:     number;
-}
+const TOOLTIP_STYLE: React.CSSProperties = {
+  background: 'var(--surface-2)',
+  border: '1px solid var(--border-focus)',
+  borderRadius: 8,
+  fontSize: 12,
+  color: 'var(--text-primary)',
+  boxShadow: 'var(--shadow-md)',
+};
 
-interface TodayBooking {
+interface BookingRow {
   id:               string;
   status:           string;
   start_time:       string;
@@ -33,656 +48,352 @@ interface TodayBooking {
   first_name:       string;
   last_name:        string;
   court_name:       string;
-  payment_status:   string;
+  court_number:     number;
+  subscription_id?: string | null;
 }
 
-// ── Formatting & Config ───────────────────────────────────────────────────────
-function egp(n: number) {
-  return `EGP ${n.toLocaleString('en-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function egp(n: number): string {
+  return `EGP ${Math.round(n).toLocaleString('en-EG')}`;
 }
 
-const PAYMENT_COLORS: Record<string, string> = {
-  CASH: '#3b82f6',         // Blue/Sky
-  VODAFONE_CASH: '#ec4899',// Magenta/Rose
-  INSTAPAY: '#8b5cf6',     // Violet/Indigo
-};
-
-const PAYMENT_LABELS: Record<string, string> = {
-  CASH: '💵 CASH',
-  VODAFONE_CASH: '📱 VODAFONE_CASH',
-  INSTAPAY: '💸 INSTAPAY',
-};
-
-// ── Financial widget card ────────────────────────────────────────────────────
-interface FinCardProps {
-  label:      string;
-  value:      string;
-  sub?:       string;
-  icon:       React.ReactNode;
-  gradient:   string;
-  glow:       string;
-  delay?:     number;
-}
-
-function FinCard({ label, value, sub, icon, gradient, glow, delay = 0 }: FinCardProps) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ ...SPRING, delay }}
-      style={{
-        position: 'relative',
-        borderRadius: 16,
-        padding: '22px 24px',
-        background: gradient,
-        boxShadow: `0 8px 32px ${glow}, 0 1px 0 rgba(255,255,255,0.06) inset`,
-        overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        minWidth: 0,
-      }}
-    >
-      <div
-        style={{
-          position: 'absolute',
-          top: -20, right: -20,
-          width: 100, height: 100,
-          borderRadius: '50%',
-          background: 'rgba(255,255,255,0.07)',
-          pointerEvents: 'none',
-        }}
-      />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span
-          style={{
-            fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-            letterSpacing: '0.08em', color: 'rgba(255,255,255,0.7)',
-          }}
-        >
-          {label}
-        </span>
-        <span style={{ color: 'rgba(255,255,255,0.85)', lineHeight: 0 }}>{icon}</span>
-      </div>
-
-      <div style={{ fontSize: 26, fontWeight: 800, color: '#fff', fontFamily: 'var(--font-mono)', lineHeight: 1 }}>
-        {value}
-      </div>
-
-      {sub && (
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: -4 }}>
-          {sub}
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-// ── Skeleton cards ───────────────────────────────────────────────────────────
-function FinCardSkeleton({ gradient, glow }: { gradient: string; glow: string }) {
-  return (
-    <div
-      style={{
-        borderRadius: 16, padding: '22px 24px',
-        background: gradient,
-        boxShadow: `0 8px 32px ${glow}`,
-        display: 'flex', flexDirection: 'column', gap: 10,
-      }}
-    >
-      <div style={{ height: 11, width: 90, borderRadius: 6, background: 'rgba(255,255,255,0.15)' }} />
-      <div style={{ height: 28, width: 140, borderRadius: 8, background: 'rgba(255,255,255,0.2)' }} />
-      <div style={{ height: 11, width: 110, borderRadius: 6, background: 'rgba(255,255,255,0.12)' }} />
-    </div>
-  );
-}
-
-// ── Main page ────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { user } = useAuthStore();
-
-  const [stats,    setStats]    = useState<DashboardStats | null>(null);
-  const [bookings, setBookings] = useState<TodayBooking[]>([]);
-  const [fin,      setFin]      = useState<FinancialSummary | null>(null);
-  const [loading,  setLoading]  = useState(true);
-  const [finLoad,  setFinLoad]  = useState(true);
-  const [statsError, setStatsError] = useState('');
-  const [finError,   setFinError]   = useState('');
-
-  // Analytics state
-  const [analytics, setAnalytics] = useState<AnalyticsPlot | null>(null);
-  const [analyticsLoad, setAnalyticsLoad] = useState(true);
-  const [rangeDays, setRangeDays] = useState<number>(30);
-
+  const router = useRouter();
   const isStaff = user?.role === 'owner' || user?.role === 'receptionist';
-  const isOwner = user?.role === 'owner';
-  const today   = format(toZonedTime(new Date(), TIMEZONE), 'yyyy-MM-dd');
 
-  // Client-only clock: avoids a hydration mismatch, since the server-rendered
-  // shell and the client's first pre-effect render must produce identical output.
-  const [now, setNow] = useState<Date | null>(null);
+  // Customers have their own home — this screen is the staff cockpit.
   useEffect(() => {
-    setNow(new Date());
-    const timer = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
+    if (user && !isStaff) router.replace('/dashboard/availability');
+  }, [user, isStaff, router]);
 
-  // ── Booking stats ─────────────────────────────────────────────
-  useEffect(() => {
-    async function load() {
-      setStatsError('');
-      try {
-        const [schedRes, pendingRes] = await Promise.all([
-          api.get(`/dashboard/schedule?date=${today}`),
-          api.get('/bookings?status=pending_verification&limit=5'),
-        ]);
-        // Response shape: { bookings, blockedPeriods }; fall back to old plain array
-        const schedData = schedRes.data;
-        const schedule: TodayBooking[] = Array.isArray(schedData)
-          ? schedData
-          : (schedData?.bookings ?? []);
-        setBookings(schedule.slice(0, 8));
-        setStats({
-          todayBookings:  schedule.length,
-          pendingVerify:  pendingRes.data.data?.length ?? 0,
-          confirmedToday: schedule.filter((b) => b.status === 'confirmed').length,
-          noshowToday:    schedule.filter((b) => b.status === 'no_show').length,
-        });
-      } catch (err: unknown) {
-        const axErr = err as { response?: { data?: { message?: string } } };
-        setStatsError(axErr?.response?.data?.message ?? 'Failed to load today\u2019s schedule.');
-      } finally {
-        setLoading(false);
-      }
+  const [todayBookings, setTodayBookings] = useState<BookingRow[]>([]);
+  const [rangeBookings, setRangeBookings] = useState<BookingRow[]>([]);
+  const [pendingCount, setPendingCount]   = useState(0);
+  const [fin, setFin]                     = useState<FinancialSummary | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState('');
+
+  const [panelOpen, setPanelOpen]         = useState(false);
+  const [detailsId, setDetailsId]         = useState<string | null>(null);
+
+  const today = format(toZonedTime(new Date(), TIMEZONE), 'yyyy-MM-dd');
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const from = new Date(Date.now() - (TREND_DAYS - 1) * 24 * 60 * 60 * 1000);
+      from.setHours(0, 0, 0, 0);
+
+      const [schedRes, pendingRes, rangeRes, finRes] = await Promise.all([
+        api.get(`/dashboard/schedule?date=${today}`),
+        api.get('/bookings?status=pending_verification&limit=50'),
+        api.get(`/bookings?from=${from.toISOString()}&to=${new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()}&limit=500`),
+        api.get('/bookings/financial-summary'),
+      ]);
+
+      const sched = schedRes.data;
+      setTodayBookings(Array.isArray(sched) ? sched : (sched?.bookings ?? []));
+      setPendingCount((pendingRes.data.data ?? []).length);
+      setRangeBookings(rangeRes.data.data ?? []);
+      setFin(finRes.data);
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string } } };
+      setError(e.response?.data?.message ?? 'Failed to load the dashboard.');
+    } finally {
+      setLoading(false);
     }
-    load();
   }, [today]);
 
-  // ── Financial summary (staff only) ────────────────────────────
-  useEffect(() => {
-    if (!isStaff) { setFinLoad(false); return; }
-    async function loadFin() {
-      setFinError('');
-      try {
-        const { data } = await api.get('/bookings/financial-summary');
-        setFin(data);
-      } catch (err: unknown) {
-        const axErr = err as { response?: { data?: { message?: string } } };
-        setFinError(axErr?.response?.data?.message ?? 'Failed to load financial summary.');
-      } finally {
-        setFinLoad(false);
-      }
+  useEffect(() => { if (isStaff) load(); }, [isStaff, load]);
+
+  // ── 14-day trend series ───────────────────────────────────────
+  const trend = useMemo(() => {
+    const active = rangeBookings.filter((b) => !['cancelled', 'expired'].includes(b.status));
+    const byDay = new Map<string, number>();
+    for (const b of active) {
+      const key = format(toZonedTime(new Date(b.start_time), TIMEZONE), 'yyyy-MM-dd');
+      byDay.set(key, (byDay.get(key) ?? 0) + 1);
     }
-    loadFin();
-  }, [isStaff]);
+    return Array.from({ length: TREND_DAYS }, (_, i) => {
+      const d = new Date(Date.now() - (TREND_DAYS - 1 - i) * 24 * 60 * 60 * 1000);
+      const key = format(toZonedTime(d, TIMEZONE), 'yyyy-MM-dd');
+      return { day: format(d, 'd MMM'), bookings: byDay.get(key) ?? 0 };
+    });
+  }, [rangeBookings]);
 
-  function refreshFin() {
-    setFinLoad(true);
-    setFin(null);
-    setFinError('');
-    api.get('/bookings/financial-summary')
-      .then(({ data }) => setFin(data))
-      .catch((err: unknown) => {
-        const axErr = err as { response?: { data?: { message?: string } } };
-        setFinError(axErr?.response?.data?.message ?? 'Failed to refresh financial data.');
-      })
-      .finally(() => setFinLoad(false));
-  }
+  // ── Top courts donut ──────────────────────────────────────────
+  const topCourts = useMemo(() => {
+    const active = rangeBookings.filter((b) => !['cancelled', 'expired'].includes(b.status));
+    const byCourt = new Map<string, { name: string; number: number; count: number }>();
+    for (const b of active) {
+      const cur = byCourt.get(b.court_name) ?? { name: b.court_name, number: b.court_number, count: 0 };
+      cur.count += 1;
+      byCourt.set(b.court_name, cur);
+    }
+    // Identity color follows court number (stable), not popularity rank
+    return Array.from(byCourt.values())
+      .sort((a, b) => a.number - b.number)
+      .map((c, i) => ({ ...c, color: catColor(i) }))
+      .sort((a, b) => b.count - a.count);
+  }, [rangeBookings]);
 
-  // ── Visual Analytics (owner only) ─────────────────────────────
-  useEffect(() => {
-    if (!isOwner) { setAnalyticsLoad(false); return; }
-    let isMounted = true;
-    setAnalyticsLoad(true);
-    api.get(`/bookings/analytics-plots?range_days=${rangeDays}`)
-      .then(({ data }) => { if (isMounted) setAnalytics(data); })
-      .catch(() => {})
-      .finally(() => { if (isMounted) setAnalyticsLoad(false); });
-    return () => { isMounted = false; };
-  }, [isOwner, rangeDays]);
+  const totalTrendBookings = trend.reduce((s, d) => s + d.bookings, 0);
+  const recent = useMemo(
+    () => [...rangeBookings]
+      .sort((a, b) => +new Date(b.start_time) - +new Date(a.start_time))
+      .slice(0, 8),
+    [rangeBookings]
+  );
 
-  // Total calculation for the Donut chart
-  const grandTotalRevenue = useMemo(() => {
-    if (!analytics?.paymentDistribution) return 0;
-    return analytics.paymentDistribution.reduce((sum, item) => sum + item.value, 0);
-  }, [analytics]);
-
-  // ── Stat cards (top row) ─────────────────────────────────────
-  const statCards = [
-    { label: "Today's Bookings", value: stats?.todayBookings ?? 0,  icon: <Calendar size={18} />,    color: 'var(--info)' },
-    { label: 'Confirmed',        value: stats?.confirmedToday ?? 0,  icon: <CheckCircle size={18} />, color: 'var(--success)' },
-    { label: 'Pending Verify',   value: stats?.pendingVerify ?? 0,   icon: <Clock size={18} />,       color: 'var(--warning)' },
-    { label: 'No Shows',         value: stats?.noshowToday ?? 0,     icon: <AlertCircle size={18} />, color: 'var(--error)' },
-  ];
-
-  // ── Financial widget config ───────────────────────────────────
-  const finCards: FinCardProps[] = [
-    {
-      label:    "Total Day Revenue",
-      value:    fin ? egp(fin.totalRevenue) : '—',
-      sub:      fin ? `${fin.totalBookings} active booking${fin.totalBookings !== 1 ? 's' : ''}` : undefined,
-      icon:     <TrendingUp size={18} />,
-      gradient: 'linear-gradient(135deg, #059669 0%, #065f46 100%)',
-      glow:     'rgba(5,150,105,0.35)',
-      delay:    0,
-    },
-    {
-      label:    "Cash in Drawer",
-      value:    fin ? egp(fin.totalCash) : '—',
-      sub:      'Physical cash received today',
-      icon:     <Banknote size={18} />,
-      gradient: 'linear-gradient(135deg, #2563eb 0%, #1e3a8a 100%)',
-      glow:     'rgba(37,99,235,0.35)',
-      delay:    0.06,
-    },
-    {
-      label:    "Digital Wallets",
-      value:    fin ? egp(fin.totalDigital) : '—',
-      sub:      fin
-        ? `Vodafone ${egp(fin.totalVodafoneCash)} · InstaPay ${egp(fin.totalInstapay)}`
-        : 'Vodafone Cash + InstaPay',
-      icon:     <Smartphone size={18} />,
-      gradient: 'linear-gradient(135deg, #db2777 0%, #7c1d5a 100%)',
-      glow:     'rgba(219,39,119,0.35)',
-      delay:    0.12,
-    },
-    {
-      label:    "Discounts Applied",
-      value:    fin ? egp(fin.totalDiscounts) : '—',
-      sub:      'Total deductions — staff leakage monitor',
-      icon:     <Percent size={18} />,
-      gradient: 'linear-gradient(135deg, #d97706 0%, #78350f 100%)',
-      glow:     'rgba(217,119,6,0.35)',
-      delay:    0.18,
-    },
-  ];
+  if (!isStaff) return null;
 
   return (
-    <div>
-      {/* ── Page header ─────────────────────────────────────────── */}
-      <div className="page-header" style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-          <div>
-            <h1 className="page-title">
-              Good {now ? (now.getHours() < 12 ? 'morning' : 'afternoon') : 'day'},{' '}
-              {user?.firstName}
-            </h1>
-            <p className="page-subtitle">
-              {now ? format(toZonedTime(now, TIMEZONE), 'EEEE, dd MMMM yyyy') : ' '} · Africa/Cairo
-            </p>
-          </div>
-          {/* Dynamic Range Filter Selector for Owner */}
-          {isOwner && (
-            <div style={{ display: 'flex', gap: 8, background: 'var(--bg-secondary)', padding: 4, borderRadius: 8 }}>
-              {[7, 30, 90].map((days) => (
-                <button
-                  key={days}
-                  onClick={() => setRangeDays(days)}
-                  className={`btn btn-sm ${rangeDays === days ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ fontSize: 12, padding: '6px 12px', height: 'auto', minHeight: 0 }}
-                >
-                  Past {days} Days
-                </button>
-              ))}
-            </div>
-          )}
+    <>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="page-subtitle">
+            {format(toZonedTime(new Date(), TIMEZONE), 'EEEE, d MMMM yyyy')} · {user?.firstName}
+          </p>
         </div>
+        <button className="btn btn-primary" onClick={() => setPanelOpen(true)}>
+          <CalendarPlus size={14} />
+          New Booking
+        </button>
       </div>
 
-      {/* ── Visual Analytics (Owner Only) ────────────────────────── */}
-      {isOwner && (
-        <motion.section
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          style={{ marginBottom: 36 }}
-          aria-label="Visual Analytics"
-        >
-          {/* Charts Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 16 }}>
-            {/* Component A — Payment Distribution */}
-            <div className="card" style={{ padding: 24, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                <PieChartIcon size={18} style={{ color: 'var(--text-secondary)' }} />
-                <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Payment Distribution</h3>
-              </div>
-              
-              {analyticsLoad ? (
-                <div style={{ display: 'flex', gap: 24, alignItems: 'center', height: 240 }}>
-                  <div className="skeleton" style={{ width: 180, height: 180, borderRadius: '50%' }} />
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {[1, 2, 3].map((i) => (
-                      <div key={i} className="skeleton" style={{ height: 40, borderRadius: 8 }} />
-                    ))}
-                  </div>
-                </div>
-              ) : analytics ? (
-                <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap', height: '100%', minHeight: 240 }}>
-                  <div style={{ position: 'relative', width: 220, height: 220, flexShrink: 0 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={analytics.paymentDistribution}
-                          dataKey="value"
-                          nameKey="name"
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={70}
-                          outerRadius={100}
-                          stroke="none"
-                        >
-                          {analytics.paymentDistribution.map((entry: PaymentDistributionSlice, index: number) => (
-                            <Cell key={`cell-${index}`} fill={PAYMENT_COLORS[entry.name] || '#ccc'} />
-                          ))}
-                        </Pie>
-                        <Tooltip 
-                          formatter={(value: any) => egp(value as number)}
-                          contentStyle={{ borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', fontSize: 13, color: 'var(--text-primary)' }}
-                          itemStyle={{ color: 'var(--text-primary)' }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', pointerEvents: 'none' }}>
-                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Total Revenue</span>
-                      <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)', marginTop: 4 }}>
-                        {egp(grandTotalRevenue)}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  {/* Explicit Totals Grid/Legend */}
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 200 }}>
-                    {analytics.paymentDistribution.map((item: PaymentDistributionSlice) => (
-                      <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: 'var(--bg-secondary)', borderRadius: 12, border: '1px solid var(--border)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ width: 12, height: 12, borderRadius: '50%', background: PAYMENT_COLORS[item.name] || '#ccc' }} />
-                          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>
-                            {PAYMENT_LABELS[item.name] || item.name}
-                          </span>
-                        </div>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-                          {egp(item.value)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 14 }}>
-                  Failed to load analytics
-                </div>
-              )}
-            </div>
-
-            {/* Component B — Hourly Peak Traffic */}
-            <div className="card" style={{ padding: 24, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                <BarChart2 size={18} style={{ color: 'var(--text-secondary)' }} />
-                <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Hourly Peak Traffic</h3>
-              </div>
-              
-              {analyticsLoad ? (
-                <div className="skeleton" style={{ flex: 1, minHeight: 240, borderRadius: 12 }} />
-              ) : analytics ? (
-                <div style={{ width: '100%', height: 240 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={analytics.hourlyPeakTraffic} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="emeraldGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#10b981" stopOpacity={0.9} />
-                          <stop offset="100%" stopColor="#047857" stopOpacity={0.7} />
-                        </linearGradient>
-                      </defs>
-                      <XAxis 
-                        dataKey="hour" 
-                        tickLine={false} 
-                        axisLine={false} 
-                        tick={{ fontSize: 11, fill: 'var(--text-tertiary)' }}
-                        dy={10}
-                      />
-                      <YAxis 
-                        tickLine={false} 
-                        axisLine={false} 
-                        tick={{ fontSize: 11, fill: 'var(--text-tertiary)' }} 
-                        allowDecimals={false}
-                      />
-                      <Tooltip
-                        cursor={{ fill: 'var(--bg-secondary)', opacity: 0.4 }}
-                        contentStyle={{ borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', fontSize: 13, color: 'var(--text-primary)' }}
-                        itemStyle={{ color: 'var(--text-primary)' }}
-                        formatter={(value: any) => [`${value as number} bookings`, 'Traffic']}
-                        labelStyle={{ fontWeight: 600, marginBottom: 4 }}
-                      />
-                      <Bar 
-                        dataKey="bookingsCount" 
-                        fill="url(#emeraldGradient)" 
-                        radius={[4, 4, 0, 0]} 
-                        maxBarSize={40}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 14 }}>
-                  Failed to load traffic data
-                </div>
-              )}
-            </div>
-          </div>
-        </motion.section>
-      )}
-
-      {/* ── Stats error banner ────────────────────────────────── */}
-      {statsError && (
-        <div style={{
-          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
-          borderRadius: 8, padding: '10px 16px', marginBottom: 16,
-          fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
+      {error && (
+        <div role="alert" style={{
+          background: 'var(--error-bg)', border: '1px solid var(--error-border)',
+          color: 'var(--error)', borderRadius: 8, padding: '10px 14px',
+          fontSize: 13, marginBottom: 24,
         }}>
-          <AlertCircle size={14} />
-          {statsError}
+          {error}
         </div>
       )}
 
-      {/* ── Booking stat cards ──────────────────────────────────── */}
-      <div className="stat-grid" style={{ marginBottom: 32 }}>
-        {statCards.map((card, i) => (
-          <motion.div
-            key={card.label}
-            className="stat-card"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...SPRING, delay: (isOwner ? 0.2 : 0) + (i * 0.06) }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span className="stat-label">{card.label}</span>
-              <span style={{ color: card.color, opacity: 0.8 }}>{card.icon}</span>
+      {/* ── KPI row ─────────────────────────────────────────── */}
+      <div className="stat-grid" style={{ marginBottom: 24 }}>
+        {loading ? (
+          [0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 108 }} />)
+        ) : (
+          <>
+            <div className="stat-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="stat-label">Today&apos;s bookings</span>
+                <CalendarCheck size={14} style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+              <span className="stat-value">{todayBookings.length}</span>
+              <span className="stat-sub">across all courts</span>
             </div>
-            {loading
-              ? <div className="skeleton" style={{ width: 60, height: 36, marginTop: 4 }} />
-              : <div className="stat-value">{card.value}</div>}
-          </motion.div>
-        ))}
+            <div className="stat-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="stat-label">Revenue today</span>
+                <Banknote size={14} style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+              <span className="stat-value">{egp(fin?.totalRevenue ?? 0)}</span>
+              <span className="stat-sub">
+                cash {egp(fin?.totalCash ?? 0)} · digital {egp(fin?.totalDigital ?? 0)}
+              </span>
+            </div>
+            <div className="stat-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="stat-label">Pending verification</span>
+                <ShieldAlert size={14} style={{ color: pendingCount > 0 ? 'var(--warning)' : 'var(--text-tertiary)' }} />
+              </div>
+              <span className="stat-value" style={pendingCount > 0 ? { color: 'var(--warning)' } : undefined}>
+                {pendingCount}
+              </span>
+              <span className="stat-sub">deposits awaiting review</span>
+            </div>
+            <div className="stat-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="stat-label">Confirmed today</span>
+                <CheckCircle2 size={14} style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+              <span className="stat-value">
+                {todayBookings.filter((b) => ['confirmed', 'checked_in'].includes(b.status)).length}
+              </span>
+              <span className="stat-sub">ready to play</span>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* ── Cash-Flow Breakdown (staff only) ────────────────────── */}
-      {isStaff && (
-        <motion.section
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          style={{ marginBottom: 36 }}
-          aria-label="Financial summary"
-        >
-          {/* Section header */}
-          <div
-            style={{
-              display: 'flex', alignItems: 'center',
-              justifyContent: 'space-between', marginBottom: 16,
-            }}
-          >
-            <div>
-              <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>
-                Cash Flow — Today
-              </h2>
-              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0 }}>
-                Live aggregation · {now ? format(toZonedTime(now, TIMEZONE), 'EEEE dd MMM yyyy') : ' '}
-              </p>
-            </div>
-            <button
-              onClick={refreshFin}
-              disabled={finLoad}
-              className="btn btn-ghost btn-sm"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: finLoad ? 0.5 : 1 }}
-              title="Refresh financial data"
-            >
-              <RefreshCw
-                size={13}
-                style={{ animation: finLoad ? 'spin 0.9s linear infinite' : 'none' }}
-              />
-              Refresh
-            </button>
+      {/* ── Charts row ──────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 16, marginBottom: 24 }}>
+        {/* Bookings trend */}
+        <div className="chart-card">
+          <div>
+            <div className="chart-title">Bookings — last {TREND_DAYS} days</div>
+            <div className="chart-sub">{totalTrendBookings} total sessions</div>
           </div>
-
-          {/* Financial cards grid */}
-          {finError && (
-            <div style={{
-              background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
-              borderRadius: 8, padding: '10px 16px', marginBottom: 16,
-              fontSize: 13, color: 'var(--error, #ef4444)', display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <AlertCircle size={14} />
-              {finError}
-            </div>
+          {loading ? (
+            <div className="skeleton" style={{ height: 220 }} />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={trend} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={SERIES_GREEN} stopOpacity={0.22} />
+                    <stop offset="100%" stopColor={SERIES_GREEN} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="0" vertical={false} />
+                <XAxis
+                  dataKey="day"
+                  tick={{ fontSize: 10.5, fill: 'var(--text-tertiary)' }}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                  interval="preserveStartEnd"
+                  minTickGap={24}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  tick={{ fontSize: 10.5, fill: 'var(--text-tertiary)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={40}
+                />
+                <Tooltip
+                  contentStyle={TOOLTIP_STYLE}
+                  cursor={{ stroke: 'var(--border-focus)', strokeWidth: 1 }}
+                  formatter={(value) => [`${value} bookings`, null]}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bookings"
+                  stroke={SERIES_GREEN}
+                  strokeWidth={2}
+                  fill="url(#trendFill)"
+                  dot={false}
+                  activeDot={{ r: 4, fill: SERIES_GREEN, stroke: 'var(--surface)', strokeWidth: 2 }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           )}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: 16,
-            }}
-          >
-            {finLoad
-              ? finCards.map((c) => (
-                  <FinCardSkeleton key={c.label} gradient={c.gradient} glow={c.glow} />
-                ))
-              : finCards.map((c) => <FinCard key={c.label} {...c} />)}
-          </div>
+        </div>
 
-          {/* Divider sub-breakdown for digital wallets */}
-          {!finLoad && fin && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.35 }}
-              style={{
-                marginTop: 16,
-                padding: '14px 20px',
-                borderRadius: 12,
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border)',
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 24,
-                alignItems: 'center',
-              }}
-            >
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Wallet Breakdown
-              </span>
-              {[
-                { label: '📱 Vodafone Cash', value: fin.totalVodafoneCash },
-                { label: '⚡ InstaPay',      value: fin.totalInstapay },
-                { label: '💵 Cash',          value: fin.totalCash },
-                { label: '🏷️ Discounts',    value: fin.totalDiscounts },
-              ].map(({ label, value }) => (
-                <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{label}</span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)', fontWeight: 700,
-                      fontSize: 14, color: 'var(--text-primary)',
-                    }}
-                  >
-                    {egp(value)}
+        {/* Top courts donut */}
+        <div className="chart-card">
+          <div>
+            <div className="chart-title">Top Courts</div>
+            <div className="chart-sub">bookings share · {TREND_DAYS} days</div>
+          </div>
+          {loading ? (
+            <div className="skeleton" style={{ height: 220 }} />
+          ) : topCourts.length === 0 ? (
+            <div className="empty-state" style={{ padding: 32 }}>
+              <span className="empty-state-title">No bookings yet</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ position: 'relative', height: 150 }}>
+                <ResponsiveContainer width="100%" height={150}>
+                  <PieChart>
+                    <Pie
+                      data={topCourts}
+                      dataKey="count"
+                      nameKey="name"
+                      innerRadius={46}
+                      outerRadius={68}
+                      paddingAngle={2}
+                      stroke="var(--surface)"
+                      strokeWidth={2}
+                    >
+                      {topCourts.map((c) => <Cell key={c.name} fill={c.color} />)}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={TOOLTIP_STYLE}
+                      formatter={(value, name) => [`${value} bookings`, name]}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{
+                  position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+                }}>
+                  <span style={{ fontSize: 20, fontWeight: 600 }}>{totalTrendBookings}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                    sessions
                   </span>
                 </div>
-              ))}
-            </motion.div>
+              </div>
+              {/* Legend — identity is never color-alone */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {topCourts.slice(0, 5).map((c) => (
+                  <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: c.color, flexShrink: 0 }} />
+                    <span style={{ color: 'var(--text-secondary)', flex: 1 }} className="truncate">{c.name}</span>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--text-primary)' }}>{c.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
-        </motion.section>
-      )}
-
-      {/* ── Today's bookings table ───────────────────────────────── */}
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: isStaff ? 0.4 : 0.2 }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Today's Bookings</h2>
-          <a href="/dashboard/schedule" className="btn btn-secondary btn-sm">
-            View Schedule
-          </a>
         </div>
+      </div>
 
-        <div className="table-wrap">
-          <table aria-label="Today's bookings">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Customer</th>
-                <th>Court</th>
-                <th>Duration</th>
-                <th>Status</th>
-                <th>Payment</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                Array.from({ length: 4 }).map((_, i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 6 }).map((_, j) => (
-                      <td key={j}>
-                        <div className="skeleton" style={{ height: 14, width: j === 0 ? 50 : 80 }} />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : bookings.length === 0 ? (
+      {/* ── Recent bookings ─────────────────────────────────── */}
+      <div className="chart-card" style={{ padding: 0 }}>
+        <div style={{ padding: '18px 24px 0' }}>
+          <div className="chart-title">Recent bookings</div>
+          <div className="chart-sub">latest activity · click a row for details</div>
+        </div>
+        {loading ? (
+          <div style={{ padding: 24 }}>
+            {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 40, marginBottom: 8 }} />)}
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
-                    No bookings today
-                  </td>
+                  <th>Member</th>
+                  <th>Court</th>
+                  <th>When</th>
+                  <th>Duration</th>
+                  <th>Status</th>
                 </tr>
-              ) : (
-                bookings.map((booking) => (
+              </thead>
+              <tbody>
+                {recent.map((b) => (
                   <tr
-                    key={booking.id}
-                    onClick={() => { window.location.href = `/dashboard/bookings/${booking.id}`; }}
+                    key={b.id}
+                    onClick={() => setDetailsId(b.id)}
                     style={{ cursor: 'pointer' }}
                   >
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>
-                      {format(toZonedTime(new Date(booking.start_time), TIMEZONE), 'HH:mm')}
+                    <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                      {b.first_name} {b.last_name}
                     </td>
-                    <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
-                      {booking.first_name} {booking.last_name}
+                    <td>{b.court_name}</td>
+                    <td>
+                      {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'd MMM · HH:mm')}
                     </td>
-                    <td>{booking.court_name}</td>
-                    <td>{booking.duration_minutes} min</td>
-                    <td><StateChip status={booking.status as any} size="sm" /></td>
-                    <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                      {booking.payment_status?.replace(/_/g, ' ')}
+                    <td>{b.duration_minutes / 60}h</td>
+                    <td><StateChip status={b.status as BookingStatus} size="sm" /></td>
+                  </tr>
+                ))}
+                {recent.length === 0 && (
+                  <tr>
+                    <td colSpan={5} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
+                      No bookings in the last {TREND_DAYS} days
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </motion.div>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-      {/* Spinner keyframe */}
-      <style>{`@keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }`}</style>
-    </div>
+      <NewBookingPanel open={panelOpen} onClose={() => setPanelOpen(false)} onCreated={load} />
+      <BookingDetailsPanel
+        open={!!detailsId}
+        bookingId={detailsId}
+        onClose={() => setDetailsId(null)}
+        onChanged={load}
+      />
+    </>
   );
 }

@@ -15,6 +15,11 @@ import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.servic
 import { emailService } from '../../infrastructure/email/email.service';
 import { ValidationError } from '../../shared/errors';
 
+export interface BookingEquipmentLine {
+  equipmentId: string;
+  quantity:    number;
+}
+
 export interface CreateBookingInput {
   clubId:          string;
   courtId:         string;
@@ -23,6 +28,8 @@ export interface CreateBookingInput {
   createdByRole:   string;
   startTime:       Date;
   durationMinutes: number;
+  /** Rental add-ons (rackets, balls, gear) charged per hour */
+  equipment?:      BookingEquipmentLine[];
   notes?:          string;
   discountAmount?: number;
   depositAmount?:  number;
@@ -41,6 +48,7 @@ export interface BookingResult {
   depositAmount:   number;
   totalPrice:      number;
   remainingBalance: number;
+  equipmentTotal:  number;
 }
 
 export async function createBooking(
@@ -92,9 +100,77 @@ export async function createBooking(
       bypassWorkingHours: isAdminRole,
     });
 
+    // ── Equipment rental lines ─────────────────────────────────
+    // Each line locks its equipment row, then checks the remaining stock
+    // against every overlapping active booking's rented quantity. The hourly
+    // price is snapshotted per line so later catalogue edits never rewrite
+    // the financial history of an existing booking.
+    const hours = input.durationMinutes / 60;
+    const endTimeForStock = new Date(
+      input.startTime.getTime() + input.durationMinutes * 60 * 1000
+    );
+
+    interface ResolvedEquipmentLine {
+      equipmentId: string;
+      name:        string;
+      quantity:    number;
+      hourlyPrice: number;
+      subtotal:    number;
+    }
+    const equipmentLines: ResolvedEquipmentLine[] = [];
+
+    for (const line of input.equipment ?? []) {
+      if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
+        throw new ValidationError('Equipment quantity must be a positive integer');
+      }
+
+      const { rows: eqRows } = await client.query<{
+        id: string; name: string; hourly_price: string; stock_qty: number; is_active: boolean;
+      }>(
+        `SELECT id, name, hourly_price, stock_qty, is_active
+         FROM equipment WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+        [line.equipmentId, input.clubId]
+      );
+      if (!eqRows.length || !eqRows[0].is_active) {
+        throw new ValidationError('Selected equipment is not available for rental');
+      }
+      const eq = eqRows[0];
+
+      const { rows: reservedRows } = await client.query<{ reserved: number }>(
+        `SELECT COALESCE(SUM(be.quantity), 0)::int AS reserved
+         FROM booking_equipment be
+         JOIN bookings b ON b.id = be.booking_id
+         WHERE be.equipment_id = $1
+           AND b.deleted_at IS NULL
+           AND b.status IN ('draft','pending_deposit','pending_verification','confirmed','checked_in')
+           AND b.start_time < $3::timestamptz
+           AND b.end_time   > $2::timestamptz`,
+        [eq.id, input.startTime.toISOString(), endTimeForStock.toISOString()]
+      );
+      const availableQty = eq.stock_qty - reservedRows[0].reserved;
+      if (line.quantity > availableQty) {
+        throw new ValidationError(
+          `Only ${Math.max(availableQty, 0)} × "${eq.name}" available for this time slot`
+        );
+      }
+
+      const hourlyPrice = Number(eq.hourly_price);
+      equipmentLines.push({
+        equipmentId: eq.id,
+        name:        eq.name,
+        quantity:    line.quantity,
+        hourlyPrice,
+        subtotal:    Math.round(hourlyPrice * line.quantity * hours * 100) / 100,
+      });
+    }
+
+    const equipmentTotal = Math.round(
+      equipmentLines.reduce((sum, l) => sum + l.subtotal, 0) * 100
+    ) / 100;
+
     // ── Calculate financial snapshot ───────────────────────────
     const durationMultiplier = input.durationMinutes / 60;
-    const totalPrice    = price_per_slot * durationMultiplier;
+    const totalPrice    = price_per_slot * durationMultiplier + equipmentTotal;
 
     // Apply discount for final calculation
     const finalPrice = Math.max(totalPrice - (input.discountAmount ?? 0), 0);
@@ -173,6 +249,16 @@ export async function createBooking(
     );
     const bookingId = bookingRows[0].id;
 
+    // ── Insert equipment rental lines ──────────────────────────
+    for (const line of equipmentLines) {
+      await client.query(
+        `INSERT INTO booking_equipment
+           (booking_id, equipment_id, quantity, hourly_price_snap, hours, subtotal)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [bookingId, line.equipmentId, line.quantity, line.hourlyPrice, hours, line.subtotal]
+      );
+    }
+
     // ── Resolve payment record state ────────────────────────────
     // Mirrors the same payment_status chain verify-deposit.usecase.ts walks;
     // we just walk it here, atomically, because the "verification" already
@@ -226,6 +312,8 @@ export async function createBooking(
         startTime:       input.startTime.toISOString(),
         durationMinutes: input.durationMinutes,
         totalPrice,
+        equipmentTotal,
+        equipment:       equipmentLines.map((l) => `${l.quantity}× ${l.name}`),
         status:          initialStatus,
       },
     });
@@ -251,6 +339,7 @@ export async function createBooking(
       depositAmount,
       totalPrice,
       remainingBalance,
+      equipmentTotal,
     };
   });
 }

@@ -11,6 +11,8 @@ import {
 import { format, addMinutes } from 'date-fns';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { bookingSchema } from '@/lib/schemas';
+import { EquipmentPicker } from '@/components/EquipmentPicker';
+import { SubscriptionToggle, SubscriptionTerm } from '@/components/SubscriptionToggle';
 
 const TIMEZONE = 'Africa/Cairo';
 
@@ -262,6 +264,14 @@ function BookCourtForm() {
   const [paymentMethod, setPaymentMethod] = useState('INSTAPAY');
   const [receiptFile, setReceiptFile]   = useState<File | null>(null);
 
+  // Add-ons / equipment rental state
+  const [equipmentQty, setEquipmentQty]     = useState<Record<string, number>>({});
+  const [equipmentTotal, setEquipmentTotal] = useState(0);
+
+  // Repeat / VIP subscription state (customer flow; staff use the New Booking panel)
+  const [repeat, setRepeat] = useState(false);
+  const [term, setTerm]     = useState<SubscriptionTerm>(1);
+
   // UI state
   const [loading, setLoading]                   = useState(false);
   const [error, setError]                       = useState('');
@@ -293,9 +303,11 @@ function BookCourtForm() {
   }
 
   const selectedCourtObj = courts.find((c) => c.id === selectedCourt);
-  const totalPrice = selectedCourtObj
+  const courtSubtotal = selectedCourtObj
     ? (selectedCourtObj.price_per_hour * duration) / 60
     : 0;
+  // Subscriptions are court-time only (gear is added per visit at the desk)
+  const totalPrice = repeat ? courtSubtotal : courtSubtotal + equipmentTotal;
 
   // Build the booking start as a Cairo-local datetime, then convert to UTC.
   //
@@ -382,6 +394,34 @@ function BookCourtForm() {
       return setError(`Total paid cannot exceed the total price of EGP ${totalPrice.toFixed(2)}`);
     }
 
+    // ── VIP weekly subscription path (customer) ─────────────────
+    // Club-billed: no upfront transfer or receipt; the desk settles each visit.
+    if (!isStaff && repeat) {
+      setLoading(true);
+      setOptimisticSuccess(true);
+      try {
+        await api.post('/subscriptions', {
+          courtId:         selectedCourt,
+          startTime:       startDateTime.toISOString(),
+          durationMinutes: duration,
+          termMonths:      term,
+        });
+        router.refresh();
+        router.push('/dashboard/my-bookings');
+      } catch (err: unknown) {
+        setOptimisticSuccess(false);
+        const axErr = err as { response?: { data?: { message?: string; error?: { message?: string } } } };
+        setError(
+          axErr?.response?.data?.error?.message
+          ?? axErr?.response?.data?.message
+          ?? 'Could not start the subscription. Please try again.'
+        );
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     // Customers must declare their payment and attach the transfer receipt
     if (!isStaff) {
       const paid = Number(amountPaid);
@@ -407,10 +447,15 @@ function BookCourtForm() {
     }
 
     try {
+      const equipmentLines = Object.entries(equipmentQty)
+        .filter(([, qty]) => qty > 0)
+        .map(([equipmentId, quantity]) => ({ equipmentId, quantity }));
+
       const basePayload = {
         court_id:         selectedCourt,
         start_time:       startDateTime.toISOString(),
         duration_minutes: duration,
+        ...(equipmentLines.length ? { equipment: equipmentLines } : {}),
         ...(isStaff ? {
           deposit_amount:   depositAmount,
           deposit_method:   depositMethod,
@@ -625,6 +670,36 @@ function BookCourtForm() {
                 </div>
               </div>
 
+              {/* ── Repeat / VIP subscription (customer only) ──── */}
+              {!isStaff && selectedCourtObj && (
+                <SubscriptionToggle
+                  enabled={repeat}
+                  term={term}
+                  onEnable={setRepeat}
+                  onTerm={setTerm}
+                  weeklyPrice={courtSubtotal}
+                />
+              )}
+
+              {/* ── Add-ons & Equipment ────────────────────────── */}
+              {selectedCourtObj && !repeat && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <label className="label" style={{ marginBottom: 0 }}>Add-ons &amp; Equipment</label>
+                    {equipmentTotal > 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--accent-green-text)', fontVariantNumeric: 'tabular-nums' }}>
+                        + EGP {equipmentTotal.toFixed(0)}
+                      </span>
+                    )}
+                  </div>
+                  <EquipmentPicker
+                    hours={duration / 60}
+                    quantities={equipmentQty}
+                    onChange={(q, subtotal) => { setEquipmentQty(q); setEquipmentTotal(subtotal); }}
+                  />
+                </div>
+              )}
+
               {/* ── Payment (Staff Only) ───────────────────────── */}
               {isStaff && selectedCourtObj && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -669,7 +744,7 @@ function BookCourtForm() {
               )}
 
               {/* ── Payment & Receipt (Customer Only) ──────────── */}
-              {!isStaff && selectedCourtObj && (
+              {!isStaff && !repeat && selectedCourtObj && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
@@ -787,9 +862,23 @@ function BookCourtForm() {
                     <span style={{ color: 'var(--text-secondary)' }}>Duration</span>
                     <span>{duration / 60} {duration === 60 ? 'hour' : 'hours'} ({duration} minutes)</span>
                   </div>
+                  {!repeat && equipmentTotal > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Equipment rental</span>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>EGP {equipmentTotal.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {repeat && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Plan</span>
+                      <span style={{ color: 'var(--accent-green-text)' }}>
+                        Weekly × {term * 4} sessions · billed at the club
+                      </span>
+                    </div>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 600, marginTop: 4 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <CreditCard size={13} /> Total
+                      <CreditCard size={13} /> {repeat ? 'Per week' : 'Total'}
                     </span>
                     <span style={{ fontFamily: 'var(--font-mono)' }}>EGP {totalPrice.toFixed(2)}</span>
                   </div>
@@ -819,7 +908,9 @@ function BookCourtForm() {
                 id="confirm-booking-btn"
                 style={{ marginTop: 4 }}
               >
-                {loading ? 'Creating booking…' : 'Confirm Booking'}
+                {loading
+                  ? (repeat ? 'Starting subscription…' : 'Creating booking…')
+                  : (repeat ? 'Start Weekly Subscription' : 'Confirm Booking')}
               </button>
             </form>
           )}

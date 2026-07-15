@@ -12,6 +12,10 @@ import * as courtCtrl   from './controllers/court.controller';
 import * as reportCtrl  from './controllers/report.controller';
 import * as auditCtrl   from './controllers/audit.controller';
 import * as refundCtrl  from './controllers/refund.controller';
+import * as equipmentCtrl    from './controllers/equipment.controller';
+import * as subscriptionCtrl from './controllers/subscription.controller';
+import * as paymentCtrl      from './controllers/payment.controller';
+import * as analyticsCtrl    from './controllers/analytics.controller';
 
 export function registerRoutes(app: Express): void {
   // ── Health check ────────────────────────────────────────────
@@ -26,11 +30,43 @@ export function registerRoutes(app: Express): void {
   auth.post('/logout',        authenticate, authCtrl.logout);
   app.use('/api/auth', auth);
 
-  // ── Users (customer list for staff) ───────────────────────────
+  // ── Users (customer list for staff + teammate management) ─────
   const users = Router();
   users.use(authenticate);
   users.get('/', requireRole('receptionist', 'owner'), authCtrl.listCustomers);
+  // /staff must be declared BEFORE any /:id route pattern
+  users.get('/staff',            requireRole('owner'), authCtrl.listStaff);
+  users.patch('/:id/status',     requireRole('owner'), authCtrl.setUserStatus);
   app.use('/api/users', users);
+
+  // ── Equipment rental catalogue ────────────────────────────────
+  const equipment = Router();
+  equipment.use(authenticate);
+  equipment.get('/',        equipmentCtrl.listEquipment);
+  equipment.post('/',       requireRole('owner'), equipmentCtrl.createEquipment);
+  equipment.patch('/:id',   requireRole('owner'), equipmentCtrl.updateEquipment);
+  equipment.delete('/:id',  requireRole('owner'), equipmentCtrl.deleteEquipment);
+  app.use('/api/equipment', equipment);
+
+  // ── VIP weekly subscriptions ──────────────────────────────────
+  const subscriptions = Router();
+  subscriptions.use(authenticate);
+  subscriptions.get('/',              subscriptionCtrl.listSubscriptions);
+  subscriptions.post('/',             requireRole('customer', 'receptionist', 'owner', 'admin'), subscriptionCtrl.createSubscriptionHandler);
+  subscriptions.patch('/:id/revoke',  requireRole('owner'), subscriptionCtrl.revokeSubscription);
+  app.use('/api/subscriptions', subscriptions);
+
+  // ── Payments ledger ───────────────────────────────────────────
+  const payments = Router();
+  payments.use(authenticate, requireRole('receptionist', 'owner'));
+  payments.get('/', paymentCtrl.listPayments);
+  app.use('/api/payments', payments);
+
+  // ── Analytics (owner only) ────────────────────────────────────
+  const analytics = Router();
+  analytics.use(authenticate, requireRole('owner'));
+  analytics.get('/overview', analyticsCtrl.getAnalyticsOverview);
+  app.use('/api/analytics', analytics);
 
   // ── Booking routes ──────────────────────────────────────────
   const bookings = Router();

@@ -43,10 +43,10 @@ export default function LoginPage() {
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 32 }}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="7" fill="white" />
-            <path d="M7 14h14M14 7v14" stroke="black" strokeWidth="2.5" strokeLinecap="round" />
+            <rect width="28" height="28" rx="7" fill="#22C55E" />
+            <path d="M7 14h14M14 7v14" stroke="#06170C" strokeWidth="2.5" strokeLinecap="round" />
           </svg>
-          <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.5px' }}>CourtFlow</span>
+          <span style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.5px' }}>CourtFlow</span>
         </div>
 
         <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 6, letterSpacing: '-0.5px' }}>

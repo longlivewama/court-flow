@@ -51,7 +51,7 @@ export default function RegisterPage() {
 
       const { data } = await api.post('/auth/register', payload);
       setMessage(data.message ?? 'Registration successful. Please verify your email.');
-      window.setTimeout(() => router.push('/login'), 1500);
+      window.setTimeout(() => router.push('/verify-email'), 1500);
     } catch (err: unknown) {
       const msg = (err as any)?.response?.data?.message ?? 'Registration failed. Please try again.';
       setError(msg);
@@ -70,10 +70,10 @@ export default function RegisterPage() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 32 }}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="7" fill="white" />
-            <path d="M7 14h14M14 7v14" stroke="black" strokeWidth="2.5" strokeLinecap="round" />
+            <rect width="28" height="28" rx="7" fill="#22C55E" />
+            <path d="M7 14h14M14 7v14" stroke="#06170C" strokeWidth="2.5" strokeLinecap="round" />
           </svg>
-          <span style={{ fontSize: 18, fontWeight: 700 }}>CourtFlow</span>
+          <span style={{ fontSize: 18, fontWeight: 600 }}>CourtFlow</span>
         </div>
 
         <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 6 }}>

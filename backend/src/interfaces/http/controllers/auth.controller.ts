@@ -272,24 +272,100 @@ export async function listCustomers(
     let searchClause = '';
     if (search) {
       params.push(`%${search.toLowerCase()}%`);
-      searchClause = `AND (LOWER(first_name) LIKE $2
-                       OR LOWER(last_name)  LIKE $2
-                       OR LOWER(email)      LIKE $2)`;
+      searchClause = `AND (LOWER(u.first_name) LIKE $2
+                       OR LOWER(u.last_name)  LIKE $2
+                       OR LOWER(u.email)      LIKE $2)`;
     }
 
     const { rows } = await db.query(
-      `SELECT id, email, first_name, last_name, phone
-         FROM users
-        WHERE club_id = $1
-          AND role = 'customer'
-          AND is_active = true
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.phone, u.created_at,
+              COALESCE(bs.bookings_count, 0)  AS bookings_count,
+              COALESCE(bs.total_spent, 0)     AS total_spent,
+              bs.last_booking_at
+         FROM users u
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*) FILTER (WHERE b.status NOT IN ('cancelled','expired'))::int AS bookings_count,
+                  COALESCE(SUM(b.deposit_amount + b.remainder_amount)
+                    FILTER (WHERE b.status IN ('confirmed','checked_in','completed','no_show')), 0)::numeric AS total_spent,
+                  MAX(b.start_time) AS last_booking_at
+           FROM bookings b
+           WHERE b.customer_id = u.id AND b.deleted_at IS NULL
+         ) bs ON TRUE
+        WHERE u.club_id = $1
+          AND u.role = 'customer'
+          AND u.is_active = true
           ${searchClause}
-        ORDER BY first_name, last_name
-        LIMIT 100`,
+        ORDER BY bs.bookings_count DESC NULLS LAST, u.first_name, u.last_name
+        LIMIT 200`,
       params
     );
 
     res.json({ data: rows });
+  } catch (err) { next(err); }
+}
+
+// ── GET /api/users/staff (owner) ──────────────────────────────
+// Teammates permissions manager: every non-customer account with its
+// active/suspended state.
+export async function listStaff(
+  req: Request, res: Response, next: NextFunction
+): Promise<void> {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, email, first_name, last_name, phone, role, is_active,
+              email_verified, created_at,
+              (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked
+         FROM users
+        WHERE club_id = $1 AND role IN ('owner', 'receptionist')
+        ORDER BY (role = 'owner') DESC, first_name, last_name`,
+      [CLUB_ID]
+    );
+
+    res.json({ data: rows });
+  } catch (err) { next(err); }
+}
+
+// ── PATCH /api/users/:id/status (owner) ───────────────────────
+// Suspend / reactivate a teammate. Owners cannot suspend themselves —
+// that would lock the club out of its own admin panel.
+export async function setUserStatus(
+  req: Request, res: Response, next: NextFunction
+): Promise<void> {
+  try {
+    const statusSchema = z.object({ isActive: z.boolean() });
+    const { isActive } = statusSchema.parse(req.body);
+
+    if (req.params.id === req.user!.sub) {
+      throw new ValidationError('You cannot change your own account status');
+    }
+
+    const { rows } = await db.query(
+      `UPDATE users
+          SET is_active = $2, updated_at = NOW()
+        WHERE id = $1 AND club_id = $3
+        RETURNING id, email, first_name, last_name, role, is_active`,
+      [req.params.id, isActive, CLUB_ID]
+    );
+    if (!rows.length) throw new NotFoundError('User', req.params.id);
+
+    // Suspending an account also revokes its refresh tokens so live
+    // sessions die at the next token refresh.
+    if (!isActive) {
+      await db.query(
+        `UPDATE refresh_tokens SET revoked_at = NOW()
+          WHERE user_id = $1 AND revoked_at IS NULL`,
+        [req.params.id]
+      );
+    }
+
+    await auditLog({
+      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_STATUS_CHANGED,
+      entityType: 'user', entityId: req.params.id,
+      newValues: { isActive, email: rows[0].email, role: rows[0].role },
+    });
+
+    res.json(rows[0]);
   } catch (err) { next(err); }
 }
 
