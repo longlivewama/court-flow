@@ -16,6 +16,11 @@ import * as equipmentCtrl    from './controllers/equipment.controller';
 import * as subscriptionCtrl from './controllers/subscription.controller';
 import * as paymentCtrl      from './controllers/payment.controller';
 import * as analyticsCtrl    from './controllers/analytics.controller';
+import * as expenseCtrl      from './controllers/expense.controller';
+import * as financeCtrl      from './controllers/finance.controller';
+import * as tournamentCtrl   from './controllers/tournament.controller';
+import * as coachingCtrl     from './controllers/coaching.controller';
+import * as lostFoundCtrl    from './controllers/lostfound.controller';
 
 export function registerRoutes(app: Express): void {
   // ── Health check ────────────────────────────────────────────
@@ -65,8 +70,55 @@ export function registerRoutes(app: Express): void {
   // ── Analytics (owner only) ────────────────────────────────────
   const analytics = Router();
   analytics.use(authenticate, requireRole('owner'));
-  analytics.get('/overview', analyticsCtrl.getAnalyticsOverview);
+  analytics.get('/overview',   analyticsCtrl.getAnalyticsOverview);
+  analytics.get('/financials', financeCtrl.getFinancials);
   app.use('/api/analytics', analytics);
+
+  // ── Club expenses (owner only) ────────────────────────────────
+  const expenses = Router();
+  expenses.use(authenticate, requireRole('owner'));
+  expenses.get('/',        expenseCtrl.listExpenses);
+  expenses.post('/',       expenseCtrl.createExpense);
+  expenses.patch('/:id',   expenseCtrl.updateExpense);
+  expenses.delete('/:id',  expenseCtrl.deleteExpense);
+  app.use('/api/expenses', expenses);
+
+  // ── Tournaments & brackets ────────────────────────────────────
+  const tournaments = Router();
+  tournaments.use(authenticate);
+  tournaments.get('/',                    tournamentCtrl.listTournaments);
+  tournaments.post('/',                   requireRole('owner'), tournamentCtrl.createTournament);
+  tournaments.get('/:id',                 tournamentCtrl.getTournament);
+  tournaments.patch('/:id',               requireRole('owner'), tournamentCtrl.updateTournament);
+  tournaments.post('/:id/teams',          requireRole('customer', 'receptionist', 'owner', 'admin'), tournamentCtrl.registerTeam);
+  tournaments.post('/:id/teams/:teamId/pay', requireRole('customer', 'receptionist', 'owner', 'admin'), tournamentCtrl.recordTeamPayment);
+  tournaments.post('/:id/bracket',        requireRole('owner'), tournamentCtrl.generateBracket);
+  tournaments.patch('/:id/matches/:matchId', requireRole('owner'), tournamentCtrl.recordMatchResult);
+  app.use('/api/tournaments', tournaments);
+
+  // ── Coaching & training ledger ────────────────────────────────
+  const coaching = Router();
+  coaching.use(authenticate);
+  coaching.get('/coaches',        requireRole('receptionist', 'owner'), coachingCtrl.listCoaches);
+  coaching.post('/coaches',       requireRole('owner'), coachingCtrl.createCoach);
+  coaching.patch('/coaches/:id',  requireRole('owner'), coachingCtrl.updateCoach);
+  coaching.get('/sessions',       requireRole('receptionist', 'owner'), coachingCtrl.listSessions);
+  coaching.post('/sessions',      requireRole('receptionist', 'owner'), coachingCtrl.createSession);
+  coaching.patch('/sessions/:id', requireRole('receptionist', 'owner'), coachingCtrl.updateSession);
+  coaching.post('/sessions/:id/pay', requireRole('receptionist', 'owner'), coachingCtrl.markSessionPaid);
+  app.use('/api/coaching', coaching);
+
+  // ── Lost & Found board ────────────────────────────────────────
+  const lostFound = Router();
+  lostFound.use(authenticate);
+  lostFound.get('/',           lostFoundCtrl.listItems);
+  lostFound.post('/',          requireRole('receptionist', 'owner'), uploadLimiter, lostFoundCtrl.photoUploadMiddleware, lostFoundCtrl.createItem);
+  lostFound.get('/:id/photo',  lostFoundCtrl.getItemPhoto);
+  lostFound.patch('/:id',      requireRole('receptionist', 'owner'), lostFoundCtrl.updateItem);
+  lostFound.post('/:id/claims',  requireRole('customer'), lostFoundCtrl.submitClaim);
+  lostFound.get('/:id/claims',   requireRole('receptionist', 'owner'), lostFoundCtrl.listClaims);
+  lostFound.patch('/:id/claims/:claimId', requireRole('receptionist', 'owner'), lostFoundCtrl.decideClaim);
+  app.use('/api/lost-found', lostFound);
 
   // ── Booking routes ──────────────────────────────────────────
   const bookings = Router();
