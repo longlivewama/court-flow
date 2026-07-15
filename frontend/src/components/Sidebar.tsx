@@ -7,6 +7,7 @@ import {
   LayoutDashboard, Calendar, CalendarCheck, Users, BarChart2,
   Settings, Shield, CreditCard, LogOut, Zap, CalendarDays,
   LineChart, Package, UserCog, Component, Smartphone,
+  Wallet, Trophy, Dumbbell, PackageSearch,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { api } from '@/lib/api';
@@ -32,14 +33,20 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/receptionist/verify',  label: 'Verify Deposits', icon: <CreditCard size={15} />, roles: ['receptionist', 'owner'], group: 'Operations' },
   { href: '/admin/payments',       label: 'Payments',    icon: <CreditCard size={15} />,   roles: ['owner', 'receptionist'], group: 'Operations' },
   { href: '/admin/customers',      label: 'Customers',   icon: <Users size={15} />,        roles: ['owner', 'receptionist'], group: 'Operations' },
+  { href: '/admin/coaching',       label: 'Coaching',    icon: <Dumbbell size={15} />,     roles: ['owner', 'receptionist'], group: 'Operations' },
+  { href: '/admin/lost-found',     label: 'Lost & Found', icon: <PackageSearch size={15} />, roles: ['owner', 'receptionist'], group: 'Operations' },
 
   // Customer
   { href: '/dashboard/availability', label: 'Availability', icon: <LayoutDashboard size={15} />, roles: ['customer'], group: 'Main' },
   { href: '/dashboard/my-bookings', label: 'My Bookings',  icon: <CalendarCheck size={15} />, roles: ['customer'], group: 'Main' },
   { href: '/dashboard/book',        label: 'Book a Court', icon: <Calendar size={15} />,      roles: ['customer'], group: 'Main' },
+  { href: '/dashboard/tournaments', label: 'Tournaments',  icon: <Trophy size={15} />,        roles: ['customer'], group: 'Main' },
+  { href: '/dashboard/lost-found',  label: 'Lost & Found', icon: <PackageSearch size={15} />, roles: ['customer'], group: 'Main' },
 
   // Owner
   { href: '/admin/analytics',    label: 'Analytics',    icon: <LineChart size={15} />,      roles: ['owner'], group: 'Admin' },
+  { href: '/admin/finance',      label: 'Finance',      icon: <Wallet size={15} />,         roles: ['owner'], group: 'Admin' },
+  { href: '/admin/tournaments',  label: 'Tournaments',  icon: <Trophy size={15} />,         roles: ['owner'], group: 'Admin' },
   { href: '/admin/inventory',    label: 'Rental & VIP', icon: <Package size={15} />,        roles: ['owner'], group: 'Admin' },
   { href: '/admin/staff',        label: 'Staff',        icon: <UserCog size={15} />,        roles: ['owner'], group: 'Admin' },
   { href: '/admin/courts',       label: 'Courts',       icon: <Settings size={15} />,       roles: ['owner'], group: 'Admin' },

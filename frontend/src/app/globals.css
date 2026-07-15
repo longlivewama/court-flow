@@ -51,6 +51,11 @@
   --neutral-bg:     #22252B;
   --neutral-text:   #9A9EA6;
 
+  /* Skeleton loaders — deliberately lighter than --surface/--surface-2 so
+     loading placeholders and their shimmer sweep stay visible on cards */
+  --skeleton-base:  #23272F;   /* zinc-800-adjacent resting shade */
+  --skeleton-sheen: #343A45;   /* shimmer highlight */
+
   /* Booking status colors */
   --status-draft:              #6B6F78;
   --status-pending-deposit:    #F2B84B;
@@ -765,11 +770,15 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   100% { background-position: 200% 0; }
 }
 .skeleton {
+  /* Base sits two steps above --surface so placeholders read clearly on
+     cards and tables; the sheen peaks brighter still so the motion sweep
+     is visible instead of blending into the panel behind it. */
   background: linear-gradient(90deg,
-    var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+    var(--skeleton-base) 25%, var(--skeleton-sheen) 50%, var(--skeleton-base) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
   border-radius: var(--r-sm);
+  border: 1px solid var(--border);
 }
 
 /* ── Empty state ──────────────────────────────────────────── */
@@ -1121,6 +1130,137 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   letter-spacing: -0.1px;
 }
 .chart-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+
+/* ── Tournament bracket tree ──────────────────────────────── */
+.bracket {
+  display: flex;
+  gap: var(--sp-10);
+  overflow-x: auto;
+  padding: var(--sp-4) var(--sp-2) var(--sp-6);
+  align-items: stretch;
+}
+.bracket-round {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  gap: var(--sp-4);
+  min-width: 210px;
+  flex-shrink: 0;
+}
+.bracket-round-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  text-align: center;
+  margin-bottom: var(--sp-2);
+}
+.bracket-match {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  position: relative;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.bracket-match:hover { border-color: var(--border-focus); }
+.bracket-match.decided { border-color: var(--success-border); }
+.bracket-match::after {
+  /* connector stub toward the next round */
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -21px;
+  width: 20px;
+  height: 1px;
+  background: var(--border-strong);
+}
+.bracket-round:last-child .bracket-match::after { display: none; }
+.bracket-team {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  min-height: 34px;
+}
+.bracket-team + .bracket-team { border-top: 1px solid var(--border); }
+.bracket-team.winner {
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  font-weight: 500;
+}
+.bracket-team.tbd { color: var(--text-disabled); font-style: italic; }
+.bracket-score {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.bracket-team.winner .bracket-score { color: var(--accent-green-text); }
+
+/* ── Lost & Found board ───────────────────────────────────── */
+.lf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-4);
+}
+.lf-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color var(--dur-normal) var(--ease-out),
+              transform var(--dur-normal) var(--ease-spring);
+}
+.lf-card:hover { border-color: var(--border-focus); transform: translateY(-2px); }
+.lf-photo-wrap {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lf-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter var(--dur-slow) var(--ease-smooth),
+              transform var(--dur-slow) var(--ease-smooth);
+}
+/* Sophisticated reveal: items rest softly blurred and sharpen on hover */
+.lf-photo.veiled { filter: blur(9px) saturate(0.85); transform: scale(1.06); }
+.lf-card:hover .lf-photo.veiled { filter: blur(0) saturate(1); transform: scale(1); }
+.lf-photo-placeholder {
+  color: var(--text-disabled);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+}
+.lf-body {
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1;
+}
+.lf-meta {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 
 /* ── Price summary rows ───────────────────────────────────── */
 .price-row {
