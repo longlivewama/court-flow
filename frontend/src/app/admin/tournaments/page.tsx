@@ -9,7 +9,7 @@
  *   · Generate the single-elimination bracket and record match results
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus, X, Check, Trophy, Users, Wallet, GitBranch } from 'lucide-react';
+import { Plus, X, Check, Trophy, Users, Wallet, GitBranch, Pencil } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Bracket, BracketMatch } from '@/components/Bracket';
 
@@ -20,6 +20,7 @@ interface TournamentRow {
   registration_fee: number;
   max_teams: number;
   starts_at: string;
+  ends_at: string;
   status: 'registration_open' | 'in_progress' | 'completed' | 'cancelled';
   team_count: number;
   collected: number;
@@ -38,6 +39,7 @@ interface TeamRow {
   outstanding?: number;
   payment_method?: string;
   paid_at?: string | null;
+  created_at: string;
   payment_status: 'paid' | 'partial' | 'pending';
 }
 
@@ -56,8 +58,33 @@ const STATUS_BADGE: Record<TournamentRow['status'], { cls: string; label: string
 
 const PAY_METHODS = ['CASH', 'INSTAPAY', 'VODAFONE_CASH', 'ONLINE'] as const;
 
+// Ledger badges per spec: PAID green, PARTIAL amber, UNPAID red
+const LEDGER_BADGE: Record<TeamRow['payment_status'], { cls: string; label: string }> = {
+  paid:    { cls: 'badge-paid',     label: 'PAID' },
+  partial: { cls: 'badge-pending',  label: 'PARTIAL' },
+  pending: { cls: 'badge-rejected', label: 'UNPAID' },
+};
+
 function egp(n: number): string {
   return `EGP ${Math.round(n).toLocaleString('en-EG')}`;
+}
+
+/** "starts 22 Jul – ends 28 Jul 2026" (start year shown only when it differs) */
+function dateRange(startsAt: string, endsAt: string): string {
+  const s = new Date(startsAt);
+  const e = new Date(endsAt);
+  const sameYear = s.getFullYear() === e.getFullYear();
+  const start = s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }) });
+  const end   = e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `starts ${start} – ends ${end}`;
+}
+
+/** Client-side schedule validation mirrored by the API. Empty string = valid. */
+function scheduleError(startsAt: string, endsAt: string): string {
+  if (!endsAt) return 'Pick an end date & time.';
+  if (!startsAt) return 'Pick a start date & time.';
+  if (new Date(endsAt) <= new Date(startsAt)) return 'The tournament must end after it starts.';
+  return '';
 }
 
 export default function AdminTournamentsPage() {
@@ -73,7 +100,9 @@ export default function AdminTournamentsPage() {
   const [draft, setDraft] = useState({
     name: '', description: '', registrationFee: '', maxTeams: '16',
     startsAt: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 16),
+    endsAt: '',
   });
+  const [dateError, setDateError] = useState('');
 
   const [teamDraft, setTeamDraft]   = useState({ teamName: '', contactPhone: '' });
   const [addingTeam, setAddingTeam] = useState(false);
@@ -114,6 +143,9 @@ export default function AdminTournamentsPage() {
     if (!draft.name.trim() || draft.registrationFee === '') {
       return setError('A tournament needs a name and a registration fee (0 is allowed).');
     }
+    const schedErr = scheduleError(draft.startsAt, draft.endsAt);
+    setDateError(schedErr);
+    if (schedErr) return;
     setCreating(true);
     setError('');
     try {
@@ -123,9 +155,10 @@ export default function AdminTournamentsPage() {
         registrationFee: Number(draft.registrationFee),
         maxTeams:        Number(draft.maxTeams) || 16,
         startsAt:        new Date(draft.startsAt).toISOString(),
+        endsAt:          new Date(draft.endsAt).toISOString(),
       });
       setCreateOpen(false);
-      setDraft((d) => ({ ...d, name: '', description: '', registrationFee: '' }));
+      setDraft((d) => ({ ...d, name: '', description: '', registrationFee: '', endsAt: '' }));
       setNotice(`"${data.name}" created — registration is open.`);
       loadList();
       setSelectedId(data.id);
@@ -309,9 +342,28 @@ export default function AdminTournamentsPage() {
               onChange={(e) => setDraft((d) => ({ ...d, maxTeams: e.target.value }))} />
           </div>
           <div className="input-group" style={{ width: 210 }}>
-            <label className="input-label">Starts</label>
-            <input className="input" type="datetime-local" value={draft.startsAt}
-              onChange={(e) => setDraft((d) => ({ ...d, startsAt: e.target.value }))} />
+            <label className="input-label" htmlFor="t-starts-at">Starts at</label>
+            <input id="t-starts-at" className="input" type="datetime-local" value={draft.startsAt}
+              aria-invalid={!!dateError}
+              onChange={(e) => {
+                const startsAt = e.target.value;
+                setDraft((d) => ({ ...d, startsAt }));
+                if (dateError) setDateError(scheduleError(startsAt, draft.endsAt));
+              }} />
+          </div>
+          <div className="input-group" style={{ width: 210 }}>
+            <label className="input-label" htmlFor="t-ends-at">Ends at</label>
+            <input id="t-ends-at" className="input" type="datetime-local" value={draft.endsAt}
+              min={draft.startsAt || undefined}
+              aria-invalid={!!dateError}
+              aria-describedby={dateError ? 't-date-error' : undefined}
+              style={dateError ? { borderColor: 'var(--error-border)' } : undefined}
+              onChange={(e) => {
+                const endsAt = e.target.value;
+                setDraft((d) => ({ ...d, endsAt }));
+                if (dateError) setDateError(scheduleError(draft.startsAt, endsAt));
+              }} />
+            {dateError && <span id="t-date-error" className="input-error">{dateError}</span>}
           </div>
           <div className="input-group" style={{ flex: 3, minWidth: 220 }}>
             <label className="input-label">Description (optional)</label>
@@ -358,7 +410,7 @@ export default function AdminTournamentsPage() {
                     {t.name}
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-                    starts {new Date(t.starts_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {dateRange(t.starts_at, t.ends_at)}
                   </div>
                 </td>
                 <td><span className={`badge ${STATUS_BADGE[t.status].cls}`}>{STATUS_BADGE[t.status].label}</span></td>
@@ -387,6 +439,9 @@ export default function AdminTournamentsPage() {
                   {detail.name}
                   <span className={`badge ${STATUS_BADGE[detail.status].cls}`}>{STATUS_BADGE[detail.status].label}</span>
                 </h2>
+                <p style={{ marginTop: 4, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                  {dateRange(detail.starts_at, detail.ends_at)}
+                </p>
                 {detail.description && <p style={{ marginTop: 4 }}>{detail.description}</p>}
                 {champion && (
                   <p style={{ marginTop: 4, color: 'var(--accent-green-text)', fontWeight: 500 }}>
@@ -432,7 +487,10 @@ export default function AdminTournamentsPage() {
 
             {/* Team & payment ledger */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <h3>Teams &amp; payments</h3>
+              <h3>Registered Teams &amp; Ledger</h3>
+              <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                fee {egp(detail.registration_fee)} / team
+              </span>
             </div>
             {detail.status === 'registration_open' && (
               <div className="card-sm" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -459,76 +517,98 @@ export default function AdminTournamentsPage() {
                   <tr>
                     <th>Team</th>
                     <th>Captain</th>
-                    <th style={{ width: 110, textAlign: 'right' }}>Due</th>
-                    <th style={{ width: 110, textAlign: 'right' }}>Paid</th>
-                    <th style={{ width: 120 }}>Status</th>
-                    <th style={{ width: 230 }} />
+                    <th style={{ width: 110 }}>Registered</th>
+                    <th style={{ width: 105, textAlign: 'right' }}>Fee (EGP)</th>
+                    <th style={{ width: 105, textAlign: 'right' }}>Paid (EGP)</th>
+                    <th style={{ width: 125, textAlign: 'right' }}>Outstanding</th>
+                    <th style={{ width: 100 }}>Status</th>
+                    <th style={{ width: 250 }} />
                   </tr>
                 </thead>
                 <tbody>
                   {detail.teams.length === 0 ? (
                     <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
+                      <td colSpan={8} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
                         No teams yet — register the first one above.
                       </td>
                     </tr>
-                  ) : detail.teams.map((team) => (
-                    <tr key={team.id}>
-                      <td>
-                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                          {team.seed ? `#${team.seed} · ` : ''}{team.name}
-                        </div>
-                        {team.contact_phone && (
-                          <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{team.contact_phone}</div>
-                        )}
-                      </td>
-                      <td>
-                        {team.captain_name ?? <span style={{ color: 'var(--text-tertiary)' }}>Walk-in</span>}
-                        {team.captain_email && (
-                          <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{team.captain_email}</div>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{egp(team.amount_due ?? 0)}</td>
-                      <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--accent-green-text)' }}>
-                        {egp(team.amount_paid ?? 0)}
-                        {team.paid_at && (
-                          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                            {team.payment_method} · {new Date(team.paid_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                  ) : detail.teams.map((team) => {
+                    const due  = team.amount_due ?? 0;
+                    const paid = team.amount_paid ?? 0;
+                    const outstanding = Math.max(due - paid, 0);
+                    return (
+                      <tr key={team.id}>
+                        <td>
+                          <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                            {team.seed ? `#${team.seed} · ` : ''}{team.name}
                           </div>
-                        )}
-                      </td>
-                      <td><span className={`badge badge-${team.payment_status}`}>{team.payment_status}</span></td>
-                      <td style={{ textAlign: 'right' }}>
-                        {team.payment_status !== 'paid' && (
-                          payTeamId === team.id ? (
-                            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                              <input className="input" type="number" min={0} placeholder={`${team.outstanding ?? 0}`}
-                                style={{ width: 84, height: 28, fontSize: 12 }}
-                                value={payDraft.amount} aria-label="Payment amount"
-                                onChange={(e) => setPayDraft((d) => ({ ...d, amount: e.target.value }))} />
-                              <select className="input" style={{ width: 110, height: 28, fontSize: 12 }}
-                                value={payDraft.method} aria-label="Payment method"
-                                onChange={(e) => setPayDraft((d) => ({ ...d, method: e.target.value }))}>
-                                {PAY_METHODS.map((m) => <option key={m} value={m}>{m.replace('_', ' ')}</option>)}
-                              </select>
-                              <button className="btn btn-primary btn-sm" onClick={() => recordPayment(team)} disabled={paying}>
-                                {paying ? '…' : 'Save'}
+                          {team.contact_phone && (
+                            <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{team.contact_phone}</div>
+                          )}
+                        </td>
+                        <td>
+                          {team.captain_name ?? <span style={{ color: 'var(--text-tertiary)' }}>Walk-in</span>}
+                          {team.captain_email && (
+                            <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{team.captain_email}</div>
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {new Date(team.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{egp(due)}</td>
+                        <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--accent-green-text)' }}>
+                          {egp(paid)}
+                          {team.paid_at && (
+                            <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+                              {team.payment_method} · {new Date(team.paid_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{
+                          textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 500,
+                          color: outstanding > 0 ? 'var(--warning)' : 'var(--text-tertiary)',
+                        }}>
+                          {egp(outstanding)}
+                        </td>
+                        <td>
+                          <span className={`badge ${LEDGER_BADGE[team.payment_status].cls}`}>
+                            {LEDGER_BADGE[team.payment_status].label}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {team.payment_status !== 'paid' && (
+                            payTeamId === team.id ? (
+                              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                                <input className="input" type="number" min={0} max={outstanding} placeholder={`${outstanding}`}
+                                  style={{ width: 84, height: 28, fontSize: 12 }}
+                                  value={payDraft.amount} aria-label={`${team.name} payment amount`} autoFocus
+                                  onChange={(e) => setPayDraft((d) => ({ ...d, amount: e.target.value }))}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') recordPayment(team); }} />
+                                <select className="input" style={{ width: 110, height: 28, fontSize: 12 }}
+                                  value={payDraft.method} aria-label="Payment method"
+                                  onChange={(e) => setPayDraft((d) => ({ ...d, method: e.target.value }))}>
+                                  {PAY_METHODS.map((m) => <option key={m} value={m}>{m.replace('_', ' ')}</option>)}
+                                </select>
+                                <button className="btn btn-primary btn-sm" onClick={() => recordPayment(team)} disabled={paying}>
+                                  {paying ? '…' : 'Save'}
+                                </button>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setPayTeamId(null)} aria-label="Cancel payment entry">
+                                  <X size={12} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button className="btn btn-secondary btn-sm"
+                                onClick={() => { setPayTeamId(team.id); setPayDraft({ amount: '', method: 'CASH' }); }}
+                                title={`Record a payment — ${egp(outstanding)} remaining`}>
+                                <Pencil size={12} />
+                                Update payment
                               </button>
-                              <button className="btn btn-ghost btn-sm" onClick={() => setPayTeamId(null)}>
-                                <X size={12} />
-                              </button>
-                            </span>
-                          ) : (
-                            <button className="btn btn-secondary btn-sm"
-                              onClick={() => { setPayTeamId(team.id); setPayDraft({ amount: '', method: 'CASH' }); }}>
-                              <Wallet size={12} />
-                              Record payment
-                            </button>
-                          )
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                            )
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -33,7 +33,7 @@ export async function listTournaments(req: Request, res: Response, next: NextFun
   try {
     const { rows } = await db.query(
       `SELECT t.id, t.name, t.description, t.registration_fee, t.max_teams,
-              t.starts_at, t.status, t.created_at,
+              t.starts_at, t.ends_at, t.status, t.created_at,
               COUNT(tt.id)::int                                           AS team_count,
               COALESCE(SUM(tt.amount_paid), 0)::numeric                   AS collected,
               COALESCE(SUM(GREATEST(tt.amount_due - tt.amount_paid, 0)), 0)::numeric AS outstanding
@@ -56,12 +56,15 @@ export async function listTournaments(req: Request, res: Response, next: NextFun
   } catch (err) { next(err); }
 }
 
+const isoDatetime = z.string().datetime({ offset: true }).or(z.string().datetime());
+
 const createSchema = z.object({
   name:            z.string().trim().min(3).max(150),
   description:     z.string().trim().max(2000).optional(),
   registrationFee: z.number().min(0),
   maxTeams:        z.number().int().min(2).max(128).default(16),
-  startsAt:        z.string().datetime({ offset: true }).or(z.string().datetime()),
+  startsAt:        isoDatetime,
+  endsAt:          isoDatetime,
 });
 
 // ── POST /api/tournaments (owner) ─────────────────────────────
@@ -69,18 +72,25 @@ export async function createTournament(req: Request, res: Response, next: NextFu
   try {
     const parsed = createSchema.parse(req.body);
 
+    if (new Date(parsed.endsAt) <= new Date(parsed.startsAt)) {
+      throw new ValidationError('endsAt must be after startsAt');
+    }
+
     const { rows } = await db.query(
-      `INSERT INTO tournaments (club_id, name, description, registration_fee, max_teams, starts_at, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      `INSERT INTO tournaments (club_id, name, description, registration_fee, max_teams, starts_at, ends_at, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [CLUB_ID, parsed.name, parsed.description ?? null, parsed.registrationFee,
-       parsed.maxTeams, parsed.startsAt, req.user!.sub]
+       parsed.maxTeams, parsed.startsAt, parsed.endsAt, req.user!.sub]
     );
 
     await auditLog({
       clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_CREATED,
       entityType: 'tournament', entityId: rows[0].id,
-      newValues: { name: parsed.name, registrationFee: parsed.registrationFee, maxTeams: parsed.maxTeams },
+      newValues: {
+        name: parsed.name, registrationFee: parsed.registrationFee, maxTeams: parsed.maxTeams,
+        startsAt: parsed.startsAt, endsAt: parsed.endsAt,
+      },
     });
 
     res.status(201).json(rows[0]);
@@ -166,7 +176,8 @@ const updateSchema = z.object({
   description:     z.string().trim().max(2000).nullable().optional(),
   registrationFee: z.number().min(0).optional(),
   maxTeams:        z.number().int().min(2).max(128).optional(),
-  startsAt:        z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
+  startsAt:        isoDatetime.optional(),
+  endsAt:          isoDatetime.optional(),
   status:          z.enum(['registration_open', 'in_progress', 'completed', 'cancelled']).optional(),
 });
 
@@ -181,6 +192,13 @@ export async function updateTournament(req: Request, res: Response, next: NextFu
     );
     if (!existingRows.length) throw new NotFoundError('Tournament', req.params.id);
 
+    // Validate the schedule window against the values that will end up stored
+    const effectiveStart = new Date(parsed.startsAt ?? existingRows[0].starts_at);
+    const effectiveEnd   = new Date(parsed.endsAt   ?? existingRows[0].ends_at);
+    if (effectiveEnd <= effectiveStart) {
+      throw new ValidationError('endsAt must be after startsAt');
+    }
+
     const { rows } = await db.query(
       `UPDATE tournaments
          SET name             = COALESCE($2, name),
@@ -188,13 +206,14 @@ export async function updateTournament(req: Request, res: Response, next: NextFu
              registration_fee = COALESCE($4, registration_fee),
              max_teams        = COALESCE($5, max_teams),
              starts_at        = COALESCE($6, starts_at),
-             status           = COALESCE($7, status),
+             ends_at          = COALESCE($7, ends_at),
+             status           = COALESCE($8, status),
              updated_at       = NOW()
-       WHERE id = $1 AND club_id = $8
+       WHERE id = $1 AND club_id = $9
        RETURNING *`,
       [req.params.id, parsed.name ?? null, parsed.description ?? null,
        parsed.registrationFee ?? null, parsed.maxTeams ?? null,
-       parsed.startsAt ?? null, parsed.status ?? null, CLUB_ID]
+       parsed.startsAt ?? null, parsed.endsAt ?? null, parsed.status ?? null, CLUB_ID]
     );
 
     await auditLog({
