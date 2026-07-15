@@ -5,7 +5,8 @@
  * Displays bookings + blocked periods with categorized visual themes.
  * Owners get a "Block Time Slot" modal wired to dynamic business hours.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronLeft, ChevronRight, X, Loader2, Plus,
@@ -488,6 +489,63 @@ export default function SchedulePage() {
   // HOURS contains the raw hour values (may be > 23 for post-midnight slots)
   const HOURS = Array.from({ length: Math.max(gridEndHour - gridStartHour + 1, 1) }, (_, i) => i + gridStartHour);
 
+  // ── Grid virtualization ─────────────────────────────────────────────
+  // A dense day (many courts × long opening hours × hundreds of bookings)
+  // used to mount every hour row, court column and booking card at once,
+  // which chokes the DOM on low-end receptionist machines. Both axes are
+  // virtualized with @tanstack/react-virtual: only the hour rows and court
+  // columns intersecting the scroll viewport (plus a small overscan) are
+  // kept in the active DOM tree, and booking/blocked cards are culled to
+  // the visible pixel window, so scrolling stays smooth at any density.
+  const TIME_AXIS_W = 80;   // px — sticky time gutter
+  const HEADER_H    = 58;   // px — sticky court header row
+  const MIN_COL_W   = 200;  // px — court column floor before horizontal scroll kicks in
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setGridWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    setGridWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // Columns stretch to fill the container until MIN_COL_W, then overflow-x
+  const colWidth = Math.max(
+    MIN_COL_W,
+    courts.length > 0 ? (gridWidth - TIME_AXIS_W) / courts.length : MIN_COL_W
+  );
+
+  const rowVirtualizer = useVirtualizer({
+    count: HOURS.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => HOUR_HEIGHT,
+    overscan: 3,
+  });
+
+  const columnVirtualizer = useVirtualizer({
+    horizontal: true,
+    count: courts.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => colWidth,
+    overscan: 1,
+  });
+
+  // Column width is responsive; force the virtualizer to pick up new sizes
+  useEffect(() => { columnVirtualizer.measure(); }, [colWidth, columnVirtualizer]);
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const virtualCols = columnVirtualizer.getVirtualItems();
+  const rowsTotal   = rowVirtualizer.getTotalSize();
+  const colsTotal   = columnVirtualizer.getTotalSize();
+
+  // Visible pixel window (incl. overscan) used to cull absolutely-positioned
+  // booking/blocked cards that live outside the rendered rows.
+  const visibleTop    = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const visibleBottom = virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].end : 0;
 
   const load = useCallback(() => {
     let cancelled = false;
@@ -649,8 +707,8 @@ export default function SchedulePage() {
         </div>
       )}
 
-      {/* ── Grid Container ── */}
-      <div style={{
+      {/* ── Grid Container (virtualized on both axes) ── */}
+      <div ref={scrollRef} style={{
         overflowX: 'auto',
         overflowY: 'auto',
         maxHeight: 'calc(100vh - 260px)',
@@ -668,9 +726,9 @@ export default function SchedulePage() {
         ) : courts.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>No courts available.</div>
         ) : (
-          <div style={{ minWidth: 820 }}>
+          <div style={{ width: TIME_AXIS_W + colsTotal }}>
 
-            {/* ── Column headers (sticky top) ── */}
+            {/* ── Column headers (sticky top, virtualized) ── */}
             <div style={{
               display: 'flex',
               borderBottom: '2px solid rgba(63,63,70,0.9)',
@@ -678,58 +736,70 @@ export default function SchedulePage() {
               backdropFilter: 'blur(16px)',
               position: 'sticky', top: 0, zIndex: 30,
               boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+              height: HEADER_H,
             }}>
-              {/* Corner spacer that aligns with the time-axis */}
+              {/* Corner spacer that aligns with the time-axis (sticky on both axes) */}
               <div style={{
-                width: 80, flexShrink: 0,
+                width: TIME_AXIS_W, flexShrink: 0,
                 borderRight: '1px solid rgba(63,63,70,0.7)',
                 background: 'rgba(5,5,7,0.98)',
+                position: 'sticky', left: 0, zIndex: 31,
               }} />
-              {courts.map((court, idx) => (
-                <div key={court.id} style={{
-                  flex: 1, padding: '13px 16px 11px',
-                  borderRight: '1px solid rgba(63,63,70,0.7)',
-                  textAlign: 'center',
-                  position: 'relative',
-                }}>
-                  {/* Subtle top accent bar */}
-                  <div style={{
-                    position: 'absolute', top: 0, left: '20%', right: '20%', height: 2,
-                    background: `linear-gradient(90deg, transparent, ${['#7c3aed','#2563eb','#0891b2','#059669','#d97706'][idx % 5]}88, transparent)`,
-                    borderRadius: '0 0 4px 4px',
-                  }} />
-                  <div style={{
-                    fontSize: 13, fontWeight: 800,
-                    color: '#f4f4f5',
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                  }}>Court {court.number}</div>
-                  <div style={{ fontSize: 10, color: '#71717a', marginTop: 3, fontWeight: 500, letterSpacing: '0.03em' }}>{court.name}</div>
-                </div>
-              ))}
+              <div style={{ position: 'relative', width: colsTotal, height: '100%' }}>
+                {virtualCols.map((vc) => {
+                  const court = courts[vc.index];
+                  return (
+                    <div key={court.id} style={{
+                      position: 'absolute',
+                      left: vc.start, width: vc.size, top: 0, height: '100%',
+                      padding: '13px 16px 11px',
+                      borderRight: '1px solid rgba(63,63,70,0.7)',
+                      textAlign: 'center',
+                      boxSizing: 'border-box',
+                    }}>
+                      {/* Subtle top accent bar */}
+                      <div style={{
+                        position: 'absolute', top: 0, left: '20%', right: '20%', height: 2,
+                        background: `linear-gradient(90deg, transparent, ${['#7c3aed','#2563eb','#0891b2','#059669','#d97706'][vc.index % 5]}88, transparent)`,
+                        borderRadius: '0 0 4px 4px',
+                      }} />
+                      <div style={{
+                        fontSize: 13, fontWeight: 800,
+                        color: '#f4f4f5',
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                      }}>Court {court.number}</div>
+                      <div style={{ fontSize: 10, color: '#71717a', marginTop: 3, fontWeight: 500, letterSpacing: '0.03em' }}>{court.name}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* ── Time grid ── */}
             <div style={{ display: 'flex', position: 'relative' }}>
 
-              {/* Time axis – sticky left */}
+              {/* Time axis – sticky left, virtualized rows */}
               <div style={{
-                width: 80, flexShrink: 0,
+                width: TIME_AXIS_W, flexShrink: 0,
                 borderRight: '2px solid rgba(63,63,70,0.8)',
                 position: 'sticky', left: 0,
                 zIndex: 20,
                 background: 'rgb(5,5,7)',
+                height: rowsTotal,
               }}>
-                {HOURS.map((hour, rowIdx) => {
+                {virtualRows.map((vr) => {
+                  const hour        = HOURS[vr.index];
                   const displayHour = hour % 12 === 0 ? 12 : hour % 12;
                   const ampm        = (hour % 24) >= 12 ? 'PM' : 'AM';
                   const isMidnight  = (hour % 24) === 0;
                   const isNoon      = (hour % 24) === 12;
-                  const isEven      = rowIdx % 2 === 0;
+                  const isEven      = vr.index % 2 === 0;
                   return (
                     <div key={hour} style={{
-                      height: HOUR_HEIGHT,
-                      position: 'relative',
+                      position: 'absolute',
+                      top: vr.start, left: 0, right: 0,
+                      height: vr.size,
                       display: 'flex',
                       alignItems: 'flex-start',
                       justifyContent: 'center',
@@ -756,33 +826,35 @@ export default function SchedulePage() {
                 })}
               </div>
 
-              {/* Courts wrapper */}
-              <div style={{ display: 'flex', flex: 1 }}>
+              {/* Courts wrapper — only columns intersecting the viewport mount */}
+              <div style={{ position: 'relative', width: colsTotal, height: rowsTotal }}>
 
-                {/* Court columns */}
-                {courts.map((court) => {
+                {/* Court columns (virtualized) */}
+                {virtualCols.map((vc) => {
+                  const court = courts[vc.index];
                   const courtBookings = getBookingsForCourt(court.id);
                   const courtBlocked  = getBlockedForCourt(court.id);
 
                   return (
                     <div key={court.id} style={{
-                      flex: 1,
-                      position: 'relative',
+                      position: 'absolute',
+                      left: vc.start, width: vc.size,
+                      top: 0, height: rowsTotal,
                       borderRight: '1px solid rgba(63,63,70,0.7)',
-                      height: HOURS.length * HOUR_HEIGHT,
+                      boxSizing: 'border-box',
                       zIndex: 10,
                     }}>
-                      {/* Zebra row backgrounds + horizontal grid lines */}
-                      {HOURS.map((hour, rowIdx) => (
-                        <div key={hour} style={{
+                      {/* Zebra row backgrounds + horizontal grid lines (visible rows only) */}
+                      {virtualRows.map((vr) => (
+                        <div key={HOURS[vr.index]} style={{
                           position: 'absolute',
-                          top: rowIdx * HOUR_HEIGHT,
+                          top: vr.start,
                           left: 0, right: 0,
-                          height: HOUR_HEIGHT,
-                          background: rowIdx % 2 === 0
+                          height: vr.size,
+                          background: vr.index % 2 === 0
                             ? 'rgba(24,24,27,0.35)'
                             : 'transparent',
-                          borderBottom: (hour % 24) === 11 || (hour % 24) === 23
+                          borderBottom: (HOURS[vr.index] % 24) === 11 || (HOURS[vr.index] % 24) === 23
                             ? '1px solid rgba(99,102,241,0.12)'
                             : '1px solid rgba(63,63,70,0.45)',
                           boxSizing: 'border-box',
@@ -791,12 +863,14 @@ export default function SchedulePage() {
                         }} />
                       ))}
 
-                      {/* ── Blocked period blocks (non-clickable) ── */}
+                      {/* ── Blocked period blocks (non-clickable, culled to viewport) ── */}
                       {courtBlocked.map((bp) => {
                         const cfg   = REASON_CONFIG[bp.reason_type] ?? REASON_CONFIG.ADMIN_CLOSED;
                         const top   = topOffset(bp.start_at);
                         const h     = blockHeight(bp.start_at, bp.end_at);
                         if (h <= 0) return null;
+                        // Skip cards entirely outside the rendered row window
+                        if (top >= visibleBottom || top + h <= visibleTop) return null;
                         const startLbl = format(toZonedTime(new Date(bp.start_at), TIMEZONE), 'hh:mm aa');
                         const endLbl   = format(toZonedTime(new Date(bp.end_at),   TIMEZONE), 'hh:mm aa');
 
@@ -855,7 +929,7 @@ export default function SchedulePage() {
                         );
                       })}
 
-                      {/* ── Booking blocks (clickable) ── */}
+                      {/* ── Booking blocks (clickable, culled to viewport) ── */}
                       {courtBookings.map((b) => {
                         const startCairo = toZonedTime(new Date(b.start_time), TIMEZONE);
                         let startHours = startCairo.getHours();
@@ -863,12 +937,16 @@ export default function SchedulePage() {
                         const mins = (startHours - gridStartHour) * 60 + startCairo.getMinutes();
                         const top  = Math.max((mins / 60) * HOUR_HEIGHT, 0);
                         const h    = (b.duration_minutes / 60) * HOUR_HEIGHT;
+                        // Skip cards entirely outside the rendered row window
+                        if (top >= visibleBottom || top + h <= visibleTop) return null;
                         const pay  = getPaymentState(b);
 
                         return (
                           <motion.div
                             key={b.id}
-                            initial={{ opacity: 0, scale: 0.97 }}
+                            // No mount animation: virtualized cards re-mount on
+                            // every scroll-in and a fade would read as flicker
+                            initial={false}
                             animate={{ opacity: 1, scale: 1 }}
                             whileHover={{ scale: 1.015, zIndex: 30 }}
                             transition={{ type: 'spring', stiffness: 400, damping: 28 }}
