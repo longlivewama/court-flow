@@ -19,6 +19,7 @@ interface TournamentRow {
   registration_fee: number;
   max_teams: number;
   starts_at: string;
+  ends_at: string;
   status: 'registration_open' | 'in_progress' | 'completed' | 'cancelled';
   team_count: number;
 }
@@ -191,7 +192,9 @@ export default function ClientTournamentsPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, color: 'var(--text-secondary)' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <CalendarDays size={12} />
-                  {new Date(t.starts_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  {new Date(t.starts_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                  {' → '}
+                  {new Date(t.ends_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                 </span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <Users size={12} />
