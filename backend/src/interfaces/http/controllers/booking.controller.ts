@@ -75,7 +75,9 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
               COALESCE(u.last_name, 'User') AS last_name,
               COALESCE(u.email, '') AS customer_email,
               u.phone AS customer_phone,
-              p.status AS payment_status, p.deposit_amount, p.total_amount
+              p.status AS payment_status, p.deposit_amount, p.total_amount,
+              (SELECT COALESCE(SUM(be.quantity), 0)::int
+                 FROM booking_equipment be WHERE be.booking_id = b.id) AS equipment_items
        FROM bookings b
        LEFT JOIN courts c ON c.id = b.court_id
        LEFT JOIN users  u ON u.id = b.customer_id
@@ -196,6 +198,12 @@ const createBookingSchema = z.object({
   payment_method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'NONE']).optional(),
   adminNotes: z.string().optional(),
   admin_notes: z.string().optional(),
+  // Rental add-ons: [{ equipmentId, quantity }]
+  equipment: z.array(z.object({
+    equipmentId:  z.string().optional(),
+    equipment_id: z.string().optional(),
+    quantity:     z.number().int().positive(),
+  })).optional(),
 });
 
 // ── POST /api/bookings ────────────────────────────────────────
@@ -252,6 +260,11 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
     const remainderAmount= parsed.remainderAmount?? parsed.remainder_amount?? 0;
     const remainderMethod= parsed.remainderMethod?? parsed.remainder_method?? 'NONE';
 
+    // Normalise equipment lines (accept camelCase or snake_case ids)
+    const equipment = (parsed.equipment ?? [])
+      .map((l) => ({ equipmentId: l.equipmentId ?? l.equipment_id ?? '', quantity: l.quantity }))
+      .filter((l) => l.equipmentId);
+
     const result = await createBooking({
       clubId:          CLUB_ID,
       courtId:         courtId!,
@@ -260,6 +273,7 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
       createdByRole:   role,
       startTime:       new Date(startTime!),
       durationMinutes: durationMinutes as any,
+      equipment,
       notes:           parsed.notes,
       discountAmount,
       depositAmount,
@@ -311,6 +325,32 @@ export async function getBooking(req: Request, res: Response, next: NextFunction
     // Privacy gate: customers must never see admin_notes
     if (role === 'customer') {
       delete booking.admin_notes;
+    }
+
+    // Rented gear breakdown (price-snapshotted lines)
+    const { rows: equipmentRows } = await db.query(
+      `SELECT be.equipment_id, be.quantity, be.hourly_price_snap, be.hours, be.subtotal,
+              COALESCE(e.name, 'Retired item') AS name,
+              COALESCE(e.category, 'gear')     AS category
+       FROM booking_equipment be
+       LEFT JOIN equipment e ON e.id = be.equipment_id
+       WHERE be.booking_id = $1
+       ORDER BY e.name`,
+      [id]
+    );
+    booking.equipment = equipmentRows;
+    booking.equipment_total = equipmentRows.reduce(
+      (sum: number, r: { subtotal: string | number }) => sum + Number(r.subtotal), 0
+    );
+
+    // Subscription context for the repeat badge
+    if (booking.subscription_id) {
+      const { rows: subRows } = await db.query(
+        `SELECT status, term_months, first_start_time, occurrences, weekly_price
+         FROM subscriptions WHERE id = $1`,
+        [booking.subscription_id]
+      );
+      booking.subscription = subRows[0] ?? null;
     }
 
     res.json(booking);

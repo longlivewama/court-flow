@@ -47,6 +47,19 @@ interface BookingDetails {
   discount_amount: number;
   admin_notes?: string;
   has_receipt?: boolean;
+  // Equipment rental + VIP subscription context
+  equipment?: {
+    equipment_id: string;
+    name: string;
+    category: string;
+    quantity: number;
+    hourly_price_snap: number | string;
+    hours: number | string;
+    subtotal: number | string;
+  }[];
+  equipment_total?: number;
+  subscription_id?: string | null;
+  subscription?: { status: string; term_months: number; occurrences: number } | null;
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -988,11 +1001,54 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
           </div>
         </div>
 
+        {/* ── Rented Equipment ───────────────────────────────────── */}
+        {(booking.equipment?.length ?? 0) > 0 && (
+          <div className="card" style={{ padding: 28 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 20 }}>
+              🏓 Rented Equipment
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {booking.equipment!.map((line) => (
+                <div key={line.equipment_id} className="addon-card">
+                  <div className="addon-thumb" aria-hidden>
+                    {line.category === 'racket' ? '🏓' : line.category === 'balls' ? '🎾' : '🧤'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                      {line.quantity} × {line.name}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                      EGP {Number(line.hourly_price_snap).toFixed(0)}/hr × {Number(line.hours)}h
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
+                    EGP {Number(line.subtotal).toFixed(2)}
+                  </div>
+                </div>
+              ))}
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', paddingTop: 10,
+                borderTop: '1px solid var(--border)', fontSize: 13,
+              }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Equipment subtotal</span>
+                <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                  EGP {Number(booking.equipment_total ?? 0).toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Payment Overview ───────────────────────────────────── */}
         <div className="card" style={{ padding: 28 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
             <CreditCard size={18} color="var(--accent)" />
             Payment Overview
+            {booking.subscription_id && (
+              <span className="repeat-chip" style={{ marginLeft: 'auto', fontSize: 11 }}>
+                ⟳ WEEKLY VIP{booking.subscription?.term_months ? ` · ${booking.subscription.term_months}MO` : ''}
+              </span>
+            )}
           </h2>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>

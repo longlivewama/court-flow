@@ -5,7 +5,8 @@ import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, Calendar, CalendarCheck, Users, BarChart2,
-  Settings, FileText, Shield, CreditCard, LogOut, Zap,
+  Settings, Shield, CreditCard, LogOut, Zap, CalendarDays,
+  LineChart, Package, UserCog, Component, Smartphone,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { api } from '@/lib/api';
@@ -22,12 +23,15 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   // Common
   { href: '/dashboard',          label: 'Dashboard',    icon: <LayoutDashboard size={15} />, roles: ['owner','receptionist'], group: 'Main' },
+  { href: '/dashboard/calendar', label: 'Calendar',     icon: <CalendarDays size={15} />,    roles: ['owner','receptionist'], group: 'Main' },
   { href: '/dashboard/schedule', label: 'Schedule',     icon: <Calendar size={15} />,        roles: ['owner','receptionist'], group: 'Main' },
   { href: '/bookings',           label: 'Bookings',     icon: <CalendarCheck size={15} />,   roles: ['owner','receptionist'], group: 'Main' },
 
   // Receptionist + Owner operations
   { href: '/receptionist/checkin', label: 'Check In',    icon: <Zap size={15} />,          roles: ['receptionist'], group: 'Operations' },
   { href: '/receptionist/verify',  label: 'Verify Deposits', icon: <CreditCard size={15} />, roles: ['receptionist', 'owner'], group: 'Operations' },
+  { href: '/admin/payments',       label: 'Payments',    icon: <CreditCard size={15} />,   roles: ['owner', 'receptionist'], group: 'Operations' },
+  { href: '/admin/customers',      label: 'Customers',   icon: <Users size={15} />,        roles: ['owner', 'receptionist'], group: 'Operations' },
 
   // Customer
   { href: '/dashboard/availability', label: 'Availability', icon: <LayoutDashboard size={15} />, roles: ['customer'], group: 'Main' },
@@ -35,10 +39,17 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard/book',        label: 'Book a Court', icon: <Calendar size={15} />,      roles: ['customer'], group: 'Main' },
 
   // Owner
+  { href: '/admin/analytics',    label: 'Analytics',    icon: <LineChart size={15} />,      roles: ['owner'], group: 'Admin' },
+  { href: '/admin/inventory',    label: 'Rental & VIP', icon: <Package size={15} />,        roles: ['owner'], group: 'Admin' },
+  { href: '/admin/staff',        label: 'Staff',        icon: <UserCog size={15} />,        roles: ['owner'], group: 'Admin' },
   { href: '/admin/courts',       label: 'Courts',       icon: <Settings size={15} />,       roles: ['owner'], group: 'Admin' },
   { href: '/admin/reports',      label: 'Reports',      icon: <BarChart2 size={15} />,      roles: ['owner'], group: 'Admin' },
   { href: '/admin/audit',        label: 'Audit Log',    icon: <Shield size={15} />,         roles: ['owner'], group: 'Admin' },
   { href: '/admin/settings',     label: 'Settings',     icon: <Settings size={15} />,       roles: ['owner'], group: 'Admin' },
+
+  // Design system
+  { href: '/showcase/components', label: 'Components',  icon: <Component size={15} />,      roles: ['owner'], group: 'Design' },
+  { href: '/showcase/mobile',     label: 'Mobile App',  icon: <Smartphone size={15} />,     roles: ['owner'], group: 'Design' },
 ];
 
 export function Sidebar() {
@@ -85,8 +96,8 @@ export function Sidebar() {
       {/* Logo */}
       <div className="nav-logo">
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <rect width="20" height="20" rx="5" fill="white" />
-          <path d="M5 10h10M10 5v10" stroke="black" strokeWidth="2" strokeLinecap="round" />
+          <rect width="20" height="20" rx="5" fill="#22C55E" />
+          <path d="M5 10h10M10 5v10" stroke="#06170C" strokeWidth="2" strokeLinecap="round" />
         </svg>
         CourtFlow
       </div>

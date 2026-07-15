@@ -32,6 +32,11 @@ export const bookingSchema = z.object({
   /** Staff/owner only – stripped server-side before persistence when actor is customer */
   admin_notes:    z.string().optional(),
   adminNotes:     z.string().optional(),
+  /** Rental add-ons: hourly-priced equipment lines */
+  equipment: z.array(z.object({
+    equipmentId: z.string(),
+    quantity:    z.number().int().positive(),
+  })).optional(),
 });
 
 export const workingHoursSchema = z.object({

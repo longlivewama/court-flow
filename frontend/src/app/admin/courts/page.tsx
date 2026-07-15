@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Edit2, Trash2, X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { Toggle } from '@/components/ui/Toggle';
 
 const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
@@ -89,6 +90,20 @@ export default function CourtsPage() {
     await load();
   }
 
+  // Quick availability toggle: available ↔ closed without opening the modal.
+  // The full status set (maintenance, events…) stays in the edit form.
+  async function toggleAvailability(court: Court, open: boolean) {
+    const next = open ? 'available' : 'closed';
+    setCourts((prev) => prev.map((c) => c.id === court.id ? { ...c, status: next } : c));
+    try {
+      await api.patch(`/courts/${court.id}`, { status: next });
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to update court status.');
+      setCourts((prev) => prev.map((c) => c.id === court.id ? { ...c, status: court.status } : c));
+    }
+  }
+
   const STATUS_COLOR: Record<string, string> = {
     available: 'var(--success)', closed: 'var(--error)',
     maintenance: 'var(--warning)', reserved_club_event: 'var(--info)', reserved_tournament: 'var(--info)',
@@ -168,6 +183,20 @@ export default function CourtsPage() {
                   {court.status.replace(/_/g, ' ')}
                 </div>
               </div>
+            </div>
+
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14,
+              paddingTop: 12, borderTop: '1px solid var(--border)',
+            }}>
+              <Toggle
+                checked={court.status === 'available'}
+                onChange={(open) => toggleAvailability(court, open)}
+                label={`${court.name} open for booking`}
+              />
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                {court.status === 'available' ? 'Open for booking' : 'Not bookable'}
+              </span>
             </div>
 
             <div style={{ display: 'flex', gap: 8 }}>
