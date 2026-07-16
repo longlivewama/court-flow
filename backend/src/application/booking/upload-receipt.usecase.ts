@@ -75,6 +75,17 @@ export async function uploadReceipt(input: UploadReceiptInput): Promise<void> {
     );
   }
 
+  // ── Encrypt + write to disk BEFORE opening the transaction ────────────────
+  // encryptAndStore performs synchronous filesystem I/O; doing it inside the
+  // transaction would pin a pooled DB connection for the duration of the write
+  // (pool-exhaustion risk under load). A transaction rollback after this point
+  // leaves an orphaned encrypted blob with no DB reference — harmless, and far
+  // cheaper than holding a connection through disk latency.
+  const { storageKey, encryptionIv } = await encryptAndStore(
+    input.fileBuffer,
+    input.fileName
+  );
+
   await withTransaction(async (client) => {
     // ── Load booking with FOR UPDATE lock ─────────────────────
     const { rows: bookingRows } = await client.query<{
@@ -100,12 +111,6 @@ export async function uploadReceipt(input: UploadReceiptInput): Promise<void> {
         `Cannot upload receipt for a booking in '${booking.status}' status`
       );
     }
-
-    // ── Encrypt and store file ────────────────────────────────
-    const { storageKey, encryptionIv } = await encryptAndStore(
-      input.fileBuffer,
-      input.fileName
-    );
 
     // ── Get payment record ────────────────────────────────────
     const { rows: paymentRows } = await client.query<{ id: string; status: string }>(

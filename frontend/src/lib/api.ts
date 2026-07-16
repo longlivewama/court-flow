@@ -15,10 +15,10 @@ export const api = axios.create({
 // ── Request interceptor: attach access token ─────────────────
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   if (typeof window !== 'undefined') {
-    // localStorage and the persisted Zustand store can momentarily diverge
-    // after a hard refresh; fall back so authenticated calls never go out bare.
-    const token = localStorage.getItem('cf_access_token')
-      ?? useAuthStore.getState().accessToken;
+    // The access token lives in memory only (see auth.store.ts). After a hard
+    // refresh it is briefly null — the first call 401s and the response
+    // interceptor below refreshes it from the HttpOnly cookie, then retries.
+    const token = useAuthStore.getState().accessToken;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -77,8 +77,7 @@ api.interceptors.response.use(
           {},
           { withCredentials: true }
         );
-        localStorage.setItem('cf_access_token', data.accessToken);
-        // Keep the Zustand store in sync so both token sources agree
+        // Token is memory-only — update the store, never localStorage.
         useAuthStore.setState({ accessToken: data.accessToken });
         processQueue(null, data.accessToken);
         originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
@@ -87,9 +86,9 @@ api.interceptors.response.use(
         // Refresh failed → the session is truly dead. Clear all client auth state
         // and return to a clean login page.
         processQueue(refreshError, null);
-        localStorage.removeItem('cf_access_token');
+        localStorage.removeItem('cf_access_token'); // purge any legacy token
         localStorage.removeItem('cf_user');
-        useAuthStore.setState({ accessToken: null });
+        useAuthStore.setState({ accessToken: null, user: null });
         // Guard against a redirect loop when the failing call originated on /login.
         if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
           window.location.href = '/login';

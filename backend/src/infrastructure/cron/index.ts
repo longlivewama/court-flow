@@ -14,21 +14,53 @@ import { auditLog, AUDIT_ACTIONS } from '../audit/audit.service';
 import { emailService } from '../email/email.service';
 import { logger } from '../../shared/logger';
 
+/**
+ * Run `fn` only if this process wins a Postgres session-level advisory lock,
+ * so exactly one replica executes the tick even when the API is scaled out.
+ *
+ * The lock and its release MUST run on the same connection — advisory locks are
+ * session-scoped, so unlocking on a different pooled connection would silently
+ * fail and leak the lock forever. We therefore hold one dedicated client for the
+ * whole tick. If a previous tick is still running (lock held), we skip rather
+ * than queue, which also prevents overlapping runs on a single instance.
+ */
+async function withAdvisoryLock(key: number, fn: () => Promise<void>): Promise<void> {
+  const client = await db.connect();
+  try {
+    const { rows } = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock($1) AS locked', [key]
+    );
+    if (!rows[0].locked) return; // another replica (or the previous tick) holds it
+    try {
+      await fn();
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [key]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
 export function startCronJobs(): void {
-  // Run every minute
-  cron.schedule('* * * * *', async () => {
-    await runExpirePendingJob();
-    await runNoShowJob();
-    await runReminderJob();
+  // Run every minute (distinct lock key from the 15-min sweep so they never
+  // block each other).
+  cron.schedule('* * * * *', () => {
+    withAdvisoryLock(4021, async () => {
+      await runExpirePendingJob();
+      await runNoShowJob();
+      await runReminderJob();
+    }).catch((err) => logger.error({ err }, 'Cron minute tick failed'));
   });
 
   // Run every 15 minutes — sweeps for stalled 'draft' bookings (and re-checks
   // 'pending_deposit' as a safety net) to free up any abandoned court slots.
-  cron.schedule('*/15 * * * *', async () => {
-    await runExpireStalledBookingsJob();
+  cron.schedule('*/15 * * * *', () => {
+    withAdvisoryLock(4022, async () => {
+      await runExpireStalledBookingsJob();
+    }).catch((err) => logger.error({ err }, 'Cron 15-min tick failed'));
   });
 
-  logger.info('Cron jobs scheduled (every 1 minute + every 15 minutes)');
+  logger.info('Cron jobs scheduled (every 1 minute + every 15 minutes, advisory-locked)');
 }
 
 // ── 1. Expire Pending Deposit bookings ────────────────────────

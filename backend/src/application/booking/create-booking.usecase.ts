@@ -13,7 +13,7 @@ import { withTransaction } from '../../infrastructure/database/client';
 import { validateBookingSlot } from '../../domain/booking/booking.validator';
 import { assertTransition, assertPaymentTransition } from '../../domain/booking/booking.state-machine';
 import { isPrimeTime, PRIME_TIME_EXPIRY_MINUTES } from '../../domain/booking/prime-time';
-import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
+import { auditLogStrict, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
 import { ValidationError, ConflictError, ForbiddenError } from '../../shared/errors';
 
@@ -353,7 +353,7 @@ export async function createBooking(
         `UPDATE slot_holds SET claimed_at = NOW(), booking_id = $2 WHERE id = $1`,
         [claimedHoldId, bookingId]
       );
-      await auditLog({
+      await auditLogStrict(client, {
         clubId: input.clubId, userId: input.createdBy, userRole: input.createdByRole,
         ipAddress: input.ipAddress, actionType: AUDIT_ACTIONS.SLOT_HOLD_CLAIMED,
         entityType: 'slot_hold', entityId: claimedHoldId,
@@ -409,7 +409,7 @@ export async function createBooking(
     );
 
     // ── Audit log ──────────────────────────────────────────────
-    await auditLog({
+    await auditLogStrict(client, {
       clubId:     input.clubId,
       userId:     input.createdBy,
       userRole:   input.createdByRole,
@@ -431,7 +431,7 @@ export async function createBooking(
     });
 
     if (autoVerifyEligible) {
-      await auditLog({
+      await auditLogStrict(client, {
         clubId:     input.clubId,
         userId:     input.createdBy,
         userRole:   input.createdByRole,

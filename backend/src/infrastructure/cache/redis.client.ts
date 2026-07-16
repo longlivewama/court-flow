@@ -5,10 +5,10 @@ export const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379'
   maxRetriesPerRequest: 3,
   enableReadyCheck: true,
   lazyConnect: false,
-  retryStrategy: (times) => {
-    if (times > 10) return null; // stop retrying
-    return Math.min(times * 100, 3000);
-  },
+  // Never permanently give up: returning null makes ioredis stop reconnecting,
+  // which would keep auth (and any other Redis dependency) dead until a manual
+  // process restart even after Redis recovers. Back off and keep trying.
+  retryStrategy: (times) => Math.min(times * 200, 5000),
 });
 
 redis.on('connect', () => logger.info('Redis connected'));

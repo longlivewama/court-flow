@@ -228,7 +228,7 @@ const RECEIPT_MAX_SIZE_MB   = 10;
 function BookCourtForm() {
   const router                   = useRouter();
   const searchParams             = useSearchParams();
-  const { user, accessToken }    = useAuthStore();
+  const { user }    = useAuthStore();
   const isStaff                  = user?.role === 'owner' || user?.role === 'receptionist';
 
   // Deep-link prefill from the availability grid: ?court=&date=&hour=
@@ -439,13 +439,9 @@ function BookCourtForm() {
     setLoading(true);
     setOptimisticSuccess(true);
 
-    // Defensively sync the Zustand-held token to localStorage before the POST.
-    // The api.ts interceptor reads from localStorage; if the store was rehydrated
-    // after a hard refresh the two can momentarily diverge.
-    if (accessToken && typeof window !== 'undefined') {
-      localStorage.setItem('cf_access_token', accessToken);
-    }
-
+    // The api.ts interceptor reads the token from the in-memory store and, if it
+    // has expired, transparently refreshes via the HttpOnly cookie — no manual
+    // localStorage sync (which would leak the token back to disk) is needed.
     try {
       const equipmentLines = Object.entries(equipmentQty)
         .filter(([, qty]) => qty > 0)
