@@ -16,6 +16,7 @@ import {
   UnauthorizedError,
   ForbiddenError,
 } from '../../../shared/errors';
+import { logger } from '../../../shared/logger';
 
 // Extend Express Request to carry the authenticated user
 declare global {
@@ -47,10 +48,18 @@ export async function authenticate(
 
     const payload = verifyAccessToken(token);
 
-    // Check revocation list in Redis
-    const isRevoked = await redis.get(CACHE_KEYS.tokenRevoked(payload.jti));
-    if (isRevoked) {
-      throw new UnauthorizedError('Token has been revoked');
+    // Check revocation list in Redis — FAIL OPEN on a Redis outage. Access tokens
+    // are short-lived and already cryptographically verified above; treating a
+    // Redis blip as "every request is unauthenticated" would take the whole API
+    // down (see redis.client.ts). We accept the token and log loudly instead.
+    try {
+      const isRevoked = await redis.get(CACHE_KEYS.tokenRevoked(payload.jti));
+      if (isRevoked) {
+        throw new UnauthorizedError('Token has been revoked');
+      }
+    } catch (redisErr) {
+      if (redisErr instanceof UnauthorizedError) throw redisErr;
+      logger.error({ err: redisErr, jti: payload.jti }, 'Redis unavailable during revocation check — failing OPEN');
     }
 
     req.user = payload;

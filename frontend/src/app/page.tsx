@@ -54,7 +54,10 @@ export default function LandingPage() {
   const [authed, setAuthed] = useState(false);
 
   useEffect(() => {
-    setAuthed(!!localStorage.getItem('cf_access_token'));
+    // The access token is no longer persisted (memory-only, XSS-hardened), so
+    // derive "logged in" from the persisted user profile instead. A stale
+    // session is corrected on the first API call via the refresh interceptor.
+    setAuthed(!!localStorage.getItem('cf_user'));
   }, []);
 
   return (

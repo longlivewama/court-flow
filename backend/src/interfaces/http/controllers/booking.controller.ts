@@ -13,7 +13,7 @@ import { deleteBooking } from '../../../application/booking/delete-booking.useca
 import { db } from '../../../infrastructure/database/client';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { decryptFile } from '../../../infrastructure/auth/encryption.service';
-import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
+import { auditLog, auditLogStrict, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { emailService } from '../../../infrastructure/email/email.service';
 import { NotFoundError, ForbiddenError, ValidationError } from '../../../shared/errors';
 
@@ -485,6 +485,14 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
     }
     let holdOffer: HoldOffer | null = null;
 
+    // Cancellation email is dispatched after commit (like the waitlist offer)
+    // so an SMTP stall cannot hold the pooled DB connection open.
+    interface CancelNotify {
+      to: string; firstName: string; bookingId: string;
+      startTime: Date; refundStatus: string;
+    }
+    let cancelNotify: CancelNotify | null = null;
+
     await withTransaction(async (client) => {
       const { rows } = await client.query<{
         id: string; status: string; customer_id: string; start_time: Date;
@@ -562,7 +570,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
             [entry.id]
           );
 
-          await auditLog({
+          await auditLogStrict(client, {
             clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
             ipAddress: req.ip, actionType: AUDIT_ACTIONS.SLOT_HOLD_CREATED,
             entityType: 'slot_hold', entityId: holdRows[0].id,
@@ -590,22 +598,17 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         `SELECT email, first_name FROM users WHERE id=$1`, [booking.customer_id]
       );
 
-      await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      await auditLogStrict(client, { clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.BOOKING_CANCELLED,
         entityType: 'booking', entityId: booking.id,
         newValues: { status: 'cancelled', reason, afterDeadline } });
 
       if (custRows.length) {
-        // Best-effort: an SMTP outage must never roll back the cancellation
-        try {
-          await emailService.sendBookingCancellation({
-            to: custRows[0].email, firstName: custRows[0].first_name,
-            bookingId: booking.id, startTime: booking.start_time,
-            refundStatus: afterDeadline ? 'Deposit forfeited (after cancellation deadline)' : 'Eligible for refund',
-          });
-        } catch {
-          // logged inside the email service after its own retries
-        }
+        cancelNotify = {
+          to: custRows[0].email, firstName: custRows[0].first_name,
+          bookingId: booking.id, startTime: booking.start_time,
+          refundStatus: afterDeadline ? 'Deposit forfeited (after cancellation deadline)' : 'Eligible for refund',
+        };
       }
     });
 
@@ -614,6 +617,15 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
     const offer: HoldOffer | null = holdOffer;
     if (offer) {
       emailService.sendWaitlistSlotOffer(offer).catch(() => {
+        // logged inside the email service after its own retries
+      });
+    }
+
+    // Best-effort cancellation email — an SMTP outage must never roll back an
+    // already-committed cancellation.
+    const notify: CancelNotify | null = cancelNotify;
+    if (notify) {
+      emailService.sendBookingCancellation(notify).catch(() => {
         // logged inside the email service after its own retries
       });
     }

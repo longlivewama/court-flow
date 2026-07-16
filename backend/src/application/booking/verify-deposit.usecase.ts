@@ -4,7 +4,7 @@
  * Reject  → booking stays 'pending_verification' + payment 'deposit_rejected'
  */
 import { withTransaction } from '../../infrastructure/database/client';
-import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
+import { auditLogStrict, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
 import { NotFoundError, ForbiddenError } from '../../shared/errors';
 import { logger } from '../../shared/logger';
@@ -20,6 +20,20 @@ export interface VerifyDepositInput {
 }
 
 export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
+  // Email is dispatched AFTER commit — never inside the transaction — so an SMTP
+  // stall cannot pin a pooled DB connection (pool-exhaustion risk under load).
+  interface Notify {
+    kind:          'approve' | 'reject';
+    to:            string;
+    firstName:     string;
+    bookingId:     string;
+    startTime:     Date;
+    depositAmount: number;
+    totalPrice:    number;
+    reason:        string;
+  }
+  let notify: Notify | null = null;
+
   await withTransaction(async (client) => {
     // Lock booking row
     const { rows: bookingRows } = await client.query<{
@@ -66,7 +80,7 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         [paymentId, input.receptionistId]
       );
 
-      await auditLog({
+      await auditLogStrict(client, {
         clubId: input.clubId, userId: input.receptionistId, userRole: 'receptionist',
         ipAddress: input.ipAddress, deviceInfo: input.deviceInfo,
         actionType: AUDIT_ACTIONS.DEPOSIT_APPROVED, entityType: 'booking',
@@ -74,19 +88,13 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         newValues: { status: 'confirmed', paymentStatus: 'deposit_approved' },
       });
 
-      // Send confirmation email — best-effort: an SMTP outage must never
-      // roll back an already-verified deposit.
-      try {
-        await emailService.sendBookingConfirmation({
-          to:           customer.email,
-          firstName:    customer.first_name,
-          bookingId:    input.bookingId,
-          startTime:    booking.start_time,
-          depositAmount: booking.deposit_amount,
-          totalPrice:   booking.total_price,
-        });
-      } catch (err) {
-        logger.warn({ err, bookingId: input.bookingId }, 'Booking confirmation email failed; deposit approval preserved');
+      // Queue the confirmation email for dispatch after commit.
+      if (customer) {
+        notify = {
+          kind: 'approve', to: customer.email, firstName: customer.first_name,
+          bookingId: input.bookingId, startTime: booking.start_time,
+          depositAmount: booking.deposit_amount, totalPrice: booking.total_price, reason: '',
+        };
       }
     } else {
       // Reject
@@ -97,7 +105,7 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         [paymentId, input.rejectionReason ?? 'Receipt rejected by receptionist', input.receptionistId]
       );
 
-      await auditLog({
+      await auditLogStrict(client, {
         clubId: input.clubId, userId: input.receptionistId, userRole: 'receptionist',
         ipAddress: input.ipAddress, deviceInfo: input.deviceInfo,
         actionType: AUDIT_ACTIONS.DEPOSIT_REJECTED, entityType: 'booking',
@@ -105,17 +113,38 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
         newValues: { paymentStatus: 'deposit_rejected', reason: input.rejectionReason },
       });
 
-      // Send rejection email — best-effort, same rationale as above
-      try {
-        await emailService.sendPaymentRejected({
-          to:        customer.email,
-          firstName: customer.first_name,
-          bookingId: input.bookingId,
-          reason:    input.rejectionReason ?? 'Your receipt could not be verified. Please re-upload.',
-        });
-      } catch (err) {
-        logger.warn({ err, bookingId: input.bookingId }, 'Payment rejection email failed; rejection preserved');
+      // Queue the rejection email for dispatch after commit.
+      if (customer) {
+        notify = {
+          kind: 'reject', to: customer.email, firstName: customer.first_name,
+          bookingId: input.bookingId, startTime: booking.start_time,
+          depositAmount: booking.deposit_amount, totalPrice: booking.total_price,
+          reason: input.rejectionReason ?? 'Your receipt could not be verified. Please re-upload.',
+        };
       }
     }
   });
+
+  // ── Best-effort notification, AFTER the transaction has committed ─────────
+  // An SMTP outage must never roll back an already-verified deposit, and (post
+  // this refactor) must never hold a DB connection open while it stalls.
+  const n = notify as Notify | null;
+  if (n?.kind === 'approve') {
+    try {
+      await emailService.sendBookingConfirmation({
+        to: n.to, firstName: n.firstName, bookingId: n.bookingId,
+        startTime: n.startTime, depositAmount: n.depositAmount, totalPrice: n.totalPrice,
+      });
+    } catch (err) {
+      logger.warn({ err, bookingId: input.bookingId }, 'Booking confirmation email failed; deposit approval preserved');
+    }
+  } else if (n?.kind === 'reject') {
+    try {
+      await emailService.sendPaymentRejected({
+        to: n.to, firstName: n.firstName, bookingId: n.bookingId, reason: n.reason,
+      });
+    } catch (err) {
+      logger.warn({ err, bookingId: input.bookingId }, 'Payment rejection email failed; rejection preserved');
+    }
+  }
 }

@@ -115,7 +115,14 @@ export async function validateBookingSlot(
   // midnight therefore has an end_time on the next calendar day, and this
   // half-open interval test (existing.start < new.end AND existing.end > new.start)
   // stays correct across the day boundary with no special-casing.
-  const excludeClause = excludeBookingId ? `AND id != '${excludeBookingId}'` : '';
+  // excludeBookingId is bound as a parameter — never string-concatenated —
+  // so a reschedule caller that passes a URL/body value cannot inject SQL.
+  const conflictParams: unknown[] = [courtId, startTime.toISOString(), endTime.toISOString()];
+  let excludeClause = '';
+  if (excludeBookingId) {
+    conflictParams.push(excludeBookingId);
+    excludeClause = `AND id <> $${conflictParams.length}::uuid`;
+  }
   const { rows: conflictRows } = await client.query(
     `SELECT id FROM bookings
      WHERE court_id = $1::uuid
@@ -124,7 +131,7 @@ export async function validateBookingSlot(
        AND start_time < $3::timestamptz
        AND end_time   > $2::timestamptz
        ${excludeClause}`,
-    [courtId, startTime.toISOString(), endTime.toISOString()]
+    conflictParams
   );
 
   if (conflictRows.length > 0) {

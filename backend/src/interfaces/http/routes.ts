@@ -217,6 +217,8 @@ export function registerRoutes(app: Express): void {
   const dashboard = Router();
   dashboard.use(authenticate);
   dashboard.get('/today',   requireRole('owner', 'receptionist'), bookingCtrl.listBookings);
-  dashboard.get('/schedule', courtCtrl.getDailySchedule);
+  // Staff-only: exposes every customer's name/phone/email + admin_notes for the
+  // day. Must NOT be reachable by a customer token (BOLA / PII disclosure).
+  dashboard.get('/schedule', requireRole('owner', 'receptionist'), courtCtrl.getDailySchedule);
   app.use('/api/dashboard', dashboard);
 }

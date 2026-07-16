@@ -28,12 +28,17 @@ export const useAuthStore = create<AuthState>()(
       accessToken: null,
 
       setAuth: (user, accessToken) => {
-        localStorage.setItem('cf_access_token', accessToken);
+        // The access token is kept IN MEMORY ONLY (never localStorage) so an XSS
+        // payload cannot read it. Session survival across reloads is handled by
+        // the HttpOnly refresh cookie: on load the first API call 401s and the
+        // axios interceptor silently refreshes. Only the non-sensitive user
+        // profile is persisted (also mirrored to cf_user for the landing page).
         localStorage.setItem('cf_user', JSON.stringify(user));
         set({ user, accessToken });
       },
 
       clearAuth: () => {
+        // removeItem('cf_access_token') purges any token left by an older build.
         localStorage.removeItem('cf_access_token');
         localStorage.removeItem('cf_user');
         set({ user: null, accessToken: null });
@@ -45,7 +50,9 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name:    'cf-auth',
-      partialize: (s) => ({ user: s.user, accessToken: s.accessToken }),
+      // Persist ONLY the user profile. The access token stays in memory (see
+      // setAuth) so it is never written to disk-backed storage.
+      partialize: (s) => ({ user: s.user }),
     }
   )
 );

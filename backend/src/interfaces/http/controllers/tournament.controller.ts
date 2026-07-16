@@ -371,6 +371,11 @@ function bracketSeedOrder(size: number): number[] {
 export async function generateBracket(req: Request, res: Response, next: NextFunction): Promise<void> {
   const client = await db.connect();
   try {
+    // BEGIN must precede the FOR UPDATE: in autocommit mode the row lock would be
+    // released the instant the SELECT returns, letting two concurrent generations
+    // both rebuild the draw. Holding it inside the transaction makes the lock real.
+    await client.query('BEGIN');
+
     const { rows: tRows } = await client.query(
       `SELECT * FROM tournaments WHERE id = $1 AND club_id = $2 FOR UPDATE`,
       [req.params.id, CLUB_ID]
@@ -386,8 +391,6 @@ export async function generateBracket(req: Request, res: Response, next: NextFun
       [req.params.id]
     );
     if (teams.length < 2) throw new ValidationError('At least 2 registered teams are required to generate a bracket');
-
-    await client.query('BEGIN');
 
     // Regenerating replaces any previous draw
     await client.query(`DELETE FROM tournament_matches WHERE tournament_id = $1`, [req.params.id]);
