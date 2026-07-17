@@ -1285,3 +1285,219 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   color: var(--text-primary);
 }
 .price-row.total strong { font-size: 16px; font-weight: 600; }
+
+/* ══ SaaS Landing v2 — bento grid, viewport masonry, pricing matrix ══════ */
+
+/* ── Hero: 3D isometric court stage ─────────────────────────── */
+.hero-stage {
+  perspective: 1100px;
+  width: 100%;
+  max-width: 720px;
+  margin-top: var(--sp-8);
+}
+.hero-court {
+  transform-style: preserve-3d;
+  will-change: transform;
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 40px 80px rgba(34, 197, 94, 0.10));
+}
+
+/* ── Feature bento grid ─────────────────────────────────────── */
+.bento-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--sp-4);
+}
+.bento-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  transition: border-color var(--dur-normal) var(--ease-standard),
+              transform var(--dur-normal) var(--ease-standard);
+}
+.bento-card:hover { border-color: var(--border-focus); transform: translateY(-2px); }
+.bento-span-4 { grid-column: span 4; }
+.bento-span-2 { grid-column: span 2; }
+.bento-span-6 { grid-column: span 6; }
+@media (max-width: 880px) {
+  .bento-span-4, .bento-span-2, .bento-span-6 { grid-column: span 6; }
+}
+.bento-kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-green-text);
+}
+.bento-title { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
+.bento-body  { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; }
+
+/* Mini virtualized timetable inside the bento */
+.bento-timetable {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+}
+.bento-slot {
+  position: relative;
+  height: 34px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.bento-slot.booked {
+  background: var(--accent-green-bg);
+  border-color: var(--success-border);
+}
+
+/* ── Live Court Viewport masonry ────────────────────────────── */
+.viewport-masonry {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 96px;
+  gap: var(--sp-4);
+}
+.viewport-tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.viewport-tile .tile-art {
+  position: absolute;
+  inset: 0;
+  transform: scale(1.03);
+  /* Native slow hover-zoom — no JS involved */
+  transition: transform 5s var(--ease-smooth);
+}
+.viewport-tile:hover .tile-art { transform: scale(1.16); }
+.viewport-tile::after {
+  /* Dark layered gradient mask over the artwork */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(10,11,14,0.05) 30%, rgba(10,11,14,0.82) 92%),
+    linear-gradient(320deg, rgba(10,11,14,0.35), transparent 55%);
+  pointer-events: none;
+}
+.tile-caption {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tile-caption strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+}
+.tile-caption span { font-size: 11px; color: var(--text-secondary); }
+.tile-r2 { grid-row: span 2; }
+.tile-r3 { grid-row: span 3; }
+.tile-c2 { grid-column: span 2; }
+@media (max-width: 880px) {
+  .viewport-masonry { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Commercial subscription matrix ─────────────────────────── */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--sp-5);
+  align-items: stretch;
+  max-width: 860px;
+  margin: 0 auto;
+}
+.pricing-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: var(--sp-8) var(--sp-6) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+.pricing-price {
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -1.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.pricing-price small {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+}
+.pricing-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Continuous pulsing border-glow on the Pro Elite card. The rotation angle
+   and pulse intensity are REGISTERED custom properties, so the compositor
+   interpolates them natively — no JS, no re-renders. */
+@property --glow-angle { syntax: '<angle>';  inherits: false; initial-value: 0deg; }
+@property --glow-alpha { syntax: '<number>'; inherits: false; initial-value: 0.30; }
+.pricing-pro {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    conic-gradient(
+      from var(--glow-angle),
+      rgba(34, 197, 94, 0.65),
+      rgba(34, 197, 94, 0.05) 28%,
+      rgba(74, 222, 128, 0.55) 52%,
+      rgba(34, 197, 94, 0.05) 74%,
+      rgba(34, 197, 94, 0.65)
+    ) border-box;
+  box-shadow: 0 0 44px rgba(34, 197, 94, calc(var(--glow-alpha) * 0.30));
+  animation:
+    pro-glow-spin 7s linear infinite,
+    pro-glow-pulse 2.8s var(--ease-standard) infinite;
+}
+@keyframes pro-glow-spin  { to { --glow-angle: 360deg; } }
+@keyframes pro-glow-pulse {
+  0%, 100% { --glow-alpha: 0.30; }
+  50%      { --glow-alpha: 0.85; }
+}
+.pricing-tag {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #06170C;
+  background: var(--accent-green);
+  border-radius: var(--r-full);
+  padding: 4px 12px;
+  white-space: nowrap;
+}

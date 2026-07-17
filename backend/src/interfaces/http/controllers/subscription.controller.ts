@@ -9,10 +9,10 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { createSubscription } from '../../../application/booking/create-subscription.usecase';
 import { db, withTransaction } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 const WEEKS_PER_MONTH = 4;
 
 const createSchema = z.object({
@@ -51,7 +51,7 @@ export async function createSubscriptionHandler(req: Request, res: Response, nex
       : (parsed.customerId ?? parsed.customer_id ?? userId);
 
     const result = await createSubscription({
-      clubId:          CLUB_ID,
+      clubId:          clubIdOf(req),
       courtId,
       customerId,
       createdBy:       userId,
@@ -74,7 +74,7 @@ export async function listSubscriptions(req: Request, res: Response, next: NextF
     const { role, sub: userId } = req.user!;
     const { status } = req.query as Record<string, string>;
 
-    const params: unknown[] = [CLUB_ID];
+    const params: unknown[] = [clubIdOf(req)];
     const conditions: string[] = ['s.club_id = $1'];
 
     if (role === 'customer') {
@@ -136,7 +136,7 @@ export async function revokeSubscription(req: Request, res: Response, next: Next
     await withTransaction(async (client) => {
       const { rows } = await client.query<{ id: string; status: string }>(
         `SELECT id, status FROM subscriptions WHERE id = $1 AND club_id = $2 FOR UPDATE`,
-        [req.params.id, CLUB_ID]
+        [req.params.id, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Subscription', req.params.id);
       if (rows[0].status !== 'active') {
@@ -165,7 +165,7 @@ export async function revokeSubscription(req: Request, res: Response, next: Next
       cancelledSessions = rowCount ?? 0;
 
       await auditLog({
-        clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+        clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.SUBSCRIPTION_REVOKED,
         entityType: 'subscription', entityId: req.params.id,
         newValues: { status: 'cancelled', cancelledSessions },

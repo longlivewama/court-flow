@@ -8,10 +8,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 export const EXPENSE_CATEGORIES = [
   'electricity', 'water', 'salaries', 'maintenance', 'gear', 'marketing', 'other',
@@ -30,7 +30,7 @@ export async function listExpenses(req: Request, res: Response, next: NextFuncti
     const rangeDays = Math.min(Math.max(parseInt((req.query.range_days as string) ?? '90', 10) || 90, 7), 730);
     const category  = req.query.category as string | undefined;
 
-    const params: unknown[] = [CLUB_ID, rangeDays];
+    const params: unknown[] = [clubIdOf(req), rangeDays];
     let categoryFilter = '';
     if (category && (EXPENSE_CATEGORIES as readonly string[]).includes(category)) {
       params.push(category);
@@ -54,7 +54,7 @@ export async function listExpenses(req: Request, res: Response, next: NextFuncti
        FROM expenses
        WHERE club_id = $1 AND expense_date >= CURRENT_DATE - ($2 || ' days')::interval
        GROUP BY category ORDER BY total DESC`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     res.json({
@@ -73,11 +73,11 @@ export async function createExpense(req: Request, res: Response, next: NextFunct
     const { rows } = await db.query(
       `INSERT INTO expenses (club_id, category, description, amount, expense_date, created_by)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [CLUB_ID, parsed.category, parsed.description, parsed.amount, parsed.expenseDate, req.user!.sub]
+      [clubIdOf(req), parsed.category, parsed.description, parsed.amount, parsed.expenseDate, req.user!.sub]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EXPENSE_CREATED,
       entityType: 'expense', entityId: rows[0].id,
       newValues: { ...parsed },
@@ -94,7 +94,7 @@ export async function updateExpense(req: Request, res: Response, next: NextFunct
 
     const { rows: existingRows } = await db.query(
       `SELECT * FROM expenses WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!existingRows.length) throw new NotFoundError('Expense', req.params.id);
     const existing = existingRows[0];
@@ -109,11 +109,11 @@ export async function updateExpense(req: Request, res: Response, next: NextFunct
        WHERE id = $1 AND club_id = $6
        RETURNING *`,
       [req.params.id, parsed.category ?? null, parsed.description ?? null,
-       parsed.amount ?? null, parsed.expenseDate ?? null, CLUB_ID]
+       parsed.amount ?? null, parsed.expenseDate ?? null, clubIdOf(req)]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EXPENSE_UPDATED,
       entityType: 'expense', entityId: req.params.id,
       previousValues: {
@@ -133,12 +133,12 @@ export async function deleteExpense(req: Request, res: Response, next: NextFunct
     const { rows } = await db.query(
       `DELETE FROM expenses WHERE id = $1 AND club_id = $2
        RETURNING id, category, description, amount`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Expense', req.params.id);
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EXPENSE_DELETED,
       entityType: 'expense', entityId: req.params.id,
       previousValues: {

@@ -80,6 +80,7 @@ export async function auditLogStrict(client: PoolClient, entry: AuditEntry): Pro
 export const AUDIT_ACTIONS = {
   // Auth
   USER_REGISTERED:         'USER_REGISTERED',
+  CLUB_REGISTERED:         'CLUB_REGISTERED',
   USER_LOGIN:              'USER_LOGIN',
   USER_LOGIN_FAILED:       'USER_LOGIN_FAILED',
   USER_LOCKED_OUT:         'USER_LOCKED_OUT',

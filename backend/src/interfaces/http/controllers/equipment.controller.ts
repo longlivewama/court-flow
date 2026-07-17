@@ -8,10 +8,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 // ── GET /api/equipment ────────────────────────────────────────
 // Customers see the active catalogue; the owner may pass ?all=1 to include
@@ -36,7 +36,7 @@ export async function listEquipment(req: Request, res: Response, next: NextFunct
        FROM equipment e
        WHERE e.club_id = $1 ${includeInactive ? '' : 'AND e.is_active = TRUE'}
        ORDER BY e.category, e.name`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     res.json({ data: rows });
@@ -70,11 +70,11 @@ export async function createEquipment(req: Request, res: Response, next: NextFun
       `INSERT INTO equipment (club_id, name, category, description, hourly_price, stock_qty)
        VALUES ($1,$2,$3,$4,$5,$6)
        RETURNING *`,
-      [CLUB_ID, name, parsed.category ?? 'racket', parsed.description ?? null, hourlyPrice, stockQty]
+      [clubIdOf(req), name, parsed.category ?? 'racket', parsed.description ?? null, hourlyPrice, stockQty]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EQUIPMENT_CREATED,
       entityType: 'equipment', entityId: rows[0].id,
       newValues: { name, hourlyPrice, stockQty },
@@ -94,7 +94,7 @@ export async function updateEquipment(req: Request, res: Response, next: NextFun
 
     const { rows: existingRows } = await db.query(
       `SELECT * FROM equipment WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!existingRows.length) throw new NotFoundError('Equipment', req.params.id);
     const existing = existingRows[0];
@@ -113,12 +113,12 @@ export async function updateEquipment(req: Request, res: Response, next: NextFun
       [
         req.params.id, parsed.name ?? null, parsed.category ?? null,
         parsed.description ?? null, hourlyPrice ?? null, stockQty ?? null,
-        isActive ?? null, CLUB_ID,
+        isActive ?? null, clubIdOf(req),
       ]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EQUIPMENT_UPDATED,
       entityType: 'equipment', entityId: req.params.id,
       previousValues: {
@@ -140,12 +140,12 @@ export async function deleteEquipment(req: Request, res: Response, next: NextFun
     const { rows } = await db.query(
       `UPDATE equipment SET is_active = FALSE, updated_at = NOW()
        WHERE id = $1 AND club_id = $2 RETURNING id, name`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Equipment', req.params.id);
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.EQUIPMENT_DELETED,
       entityType: 'equipment', entityId: req.params.id,
       newValues: { name: rows[0].name, isActive: false },

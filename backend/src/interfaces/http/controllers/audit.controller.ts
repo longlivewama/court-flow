@@ -1,12 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 export async function listAuditLogs(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { userId, entityType, actionType, from, to, page = '1', limit = '50' } = req.query as Record<string, string>;
-    const params: unknown[] = [CLUB_ID];
+    const params: unknown[] = [clubIdOf(req)];
     const conditions = ['club_id = $1'];
 
     if (userId)     { params.push(userId);     conditions.push(`user_id = $${params.length}`); }

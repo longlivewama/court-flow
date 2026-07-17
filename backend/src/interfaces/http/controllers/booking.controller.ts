@@ -11,13 +11,13 @@ import { uploadReceipt } from '../../../application/booking/upload-receipt.useca
 import { verifyDeposit } from '../../../application/booking/verify-deposit.usecase';
 import { deleteBooking } from '../../../application/booking/delete-booking.usecase';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { decryptFile } from '../../../infrastructure/auth/encryption.service';
 import { auditLog, auditLogStrict, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { emailService } from '../../../infrastructure/email/email.service';
 import { NotFoundError, ForbiddenError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -49,7 +49,7 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
     const { status, courtId, customerId, from, to, page = '1', limit = '20' } = req.query as Record<string, string>;
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const params: unknown[] = [CLUB_ID];
+    const params: unknown[] = [clubIdOf(req)];
     const conditions: string[] = ['b.club_id = $1', 'b.deleted_at IS NULL'];
 
     // Customers only see their own bookings
@@ -127,7 +127,7 @@ export async function getFinancialSummary(req: Request, res: Response, next: Nex
     const fromExpr = from ? `$2::date` : `(NOW() AT TIME ZONE '${tz}' - ${shiftInterval})::date`;
     const toExpr   = to   ? `$${from ? 3 : 2}::date` : `(NOW() AT TIME ZONE '${tz}' - ${shiftInterval})::date`;
 
-    const finalParams: unknown[] = [CLUB_ID];
+    const finalParams: unknown[] = [clubIdOf(req)];
     if (from) finalParams.push(from);
     if (to)   finalParams.push(to);
 
@@ -243,7 +243,7 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
         const { rows: insertRows } = await db.query(
           `INSERT INTO users (club_id, first_name, last_name, phone, email, password_hash, role)
            VALUES ($1, $2, $3, $4, $5, 'WALKIN_NO_PASSWORD', 'customer') RETURNING id`,
-          [CLUB_ID, firstName, lastName, parsed.customerPhone, email]
+          [clubIdOf(req), firstName, lastName, parsed.customerPhone, email]
         );
         resolvedCustomerId = insertRows[0].id;
       }
@@ -271,7 +271,7 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
       .filter((l) => l.equipmentId);
 
     const result = await createBooking({
-      clubId:          CLUB_ID,
+      clubId:          clubIdOf(req),
       courtId:         courtId!,
       customerId:      resolvedCustomerId,
       createdBy:       userId,
@@ -318,7 +318,7 @@ export async function getBooking(req: Request, res: Response, next: NextFunction
        LEFT JOIN courts c ON c.id = b.court_id
        LEFT JOIN users  u ON u.id = b.customer_id
        WHERE b.id = $1 AND b.club_id = $2 AND b.deleted_at IS NULL`,
-      [id, CLUB_ID]
+      [id, clubIdOf(req)]
     );
 
     if (!rows.length) throw new NotFoundError('Booking', id);
@@ -371,7 +371,7 @@ export async function uploadReceiptHandler(req: Request, res: Response, next: Ne
     await uploadReceipt({
       bookingId:   req.params.id,
       customerId:  req.user!.sub,
-      clubId:      CLUB_ID,
+      clubId:      clubIdOf(req),
       fileBuffer:  req.file.buffer,
       fileName:    req.file.originalname,
       fileMime:    req.file.mimetype,
@@ -394,7 +394,7 @@ export async function getReceiptHandler(req: Request, res: Response, next: NextF
 
     const { rows: bookingRows } = await db.query<{ id: string; customer_id: string }>(
       `SELECT id, customer_id FROM bookings WHERE id = $1 AND club_id = $2`,
-      [id, CLUB_ID]
+      [id, clubIdOf(req)]
     );
     if (!bookingRows.length) throw new NotFoundError('Booking', id);
 
@@ -435,7 +435,7 @@ export async function verifyDepositHandler(req: Request, res: Response, next: Ne
     await verifyDeposit({
       bookingId:      req.params.id,
       receptionistId: req.user!.sub,
-      clubId:         CLUB_ID,
+      clubId:         clubIdOf(req),
       action,
       rejectionReason,
       ipAddress:      req.ip,
@@ -452,7 +452,7 @@ export async function checkinHandler(req: Request, res: Response, next: NextFunc
     await withTransaction(async (client) => {
       const { rows } = await client.query<{ id: string; status: string; customer_id: string }>(
         `SELECT id, status, customer_id FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
-        [req.params.id, CLUB_ID]
+        [req.params.id, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Booking', req.params.id);
       if (rows[0].status !== 'confirmed') throw new ValidationError(`Booking must be 'confirmed' to check in`);
@@ -462,7 +462,7 @@ export async function checkinHandler(req: Request, res: Response, next: NextFunc
         [req.params.id]
       );
 
-      await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.BOOKING_CHECKED_IN,
         entityType: 'booking', entityId: req.params.id,
         newValues: { status: 'checked_in', checkedInAt: new Date().toISOString() } });
@@ -499,7 +499,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         end_time: Date; court_id: string;
       }>(
         `SELECT id,status,customer_id,start_time,end_time,court_id FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
-        [req.params.id, CLUB_ID]
+        [req.params.id, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Booking', req.params.id);
       const booking = rows[0];
@@ -516,7 +516,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
 
       // Cancellation policy: check deadline
       const { rows: clubRows } = await client.query<{ cancellation_deadline_hours: number }>(
-        `SELECT cancellation_deadline_hours FROM clubs WHERE id=$1`, [CLUB_ID]
+        `SELECT cancellation_deadline_hours FROM clubs WHERE id=$1`, [clubIdOf(req)]
       );
       const deadlineHours = clubRows[0]?.cancellation_deadline_hours ?? 24;
       const deadline = new Date(booking.start_time.getTime() - deadlineHours * 60 * 60 * 1000);
@@ -551,7 +551,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
            ORDER BY w.created_at
            LIMIT 1
            FOR UPDATE SKIP LOCKED`,
-          [CLUB_ID, booking.court_id, booking.start_time, booking.end_time, booking.customer_id]
+          [clubIdOf(req), booking.court_id, booking.start_time, booking.end_time, booking.customer_id]
         );
 
         if (topEntry.length) {
@@ -563,7 +563,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
           const { rows: holdRows } = await client.query<{ id: string }>(
             `INSERT INTO slot_holds (club_id, court_id, user_id, start_time, end_time, token_hash, expires_at)
              VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-            [CLUB_ID, booking.court_id, entry.user_id, booking.start_time, booking.end_time, tokenHash, expiresAt]
+            [clubIdOf(req), booking.court_id, entry.user_id, booking.start_time, booking.end_time, tokenHash, expiresAt]
           );
           await client.query(
             `UPDATE waitlist_entries SET fulfilled_at = NOW() WHERE id = $1`,
@@ -571,7 +571,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
           );
 
           await auditLogStrict(client, {
-            clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+            clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
             ipAddress: req.ip, actionType: AUDIT_ACTIONS.SLOT_HOLD_CREATED,
             entityType: 'slot_hold', entityId: holdRows[0].id,
             newValues: {
@@ -598,7 +598,7 @@ export async function cancelBookingHandler(req: Request, res: Response, next: Ne
         `SELECT email, first_name FROM users WHERE id=$1`, [booking.customer_id]
       );
 
-      await auditLogStrict(client, { clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      await auditLogStrict(client, { clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.BOOKING_CANCELLED,
         entityType: 'booking', entityId: booking.id,
         newValues: { status: 'cancelled', reason, afterDeadline } });
@@ -675,7 +675,7 @@ export async function settlePaymentHandler(req: Request, res: Response, next: Ne
       }>(
         `SELECT id, total_price, deposit_amount, remainder_amount, discount_amount, status
          FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
-        [bookingId, CLUB_ID]
+        [bookingId, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Booking', bookingId);
 
@@ -719,14 +719,14 @@ export async function settlePaymentHandler(req: Request, res: Response, next: Ne
           finalDiscount,
           adminNotes ?? null,
           financialStatus,
-          CLUB_ID,
+          clubIdOf(req),
         ]
       );
 
       updatedBooking = updated[0] ?? {};
 
       await auditLog({
-        clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+        clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip,
         actionType: AUDIT_ACTIONS.BALANCE_RECORDED,
         entityType: 'booking', entityId: bookingId,
@@ -766,7 +766,7 @@ export async function getAnalyticsPlots(
          -- customer self-reports so the analytics cash-split reflects real income.
          AND status  IN ('confirmed', 'checked_in', 'completed', 'no_show')
          AND created_at >= NOW() - ($2 || ' days')::interval`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     const dr = distRows[0];
@@ -789,7 +789,7 @@ export async function getAnalyticsPlots(
          AND created_at >= NOW() - ($2 || ' days')::interval
        GROUP BY hour_slot
        ORDER BY hour_slot`,
-      [CLUB_ID, rangeDays, tz]
+      [clubIdOf(req), rangeDays, tz]
     );
 
     // Build a dense 06:00–22:00 series so charts always have full x-axis even
@@ -825,7 +825,7 @@ export async function deleteBookingHandler(req: Request, res: Response, next: Ne
 
     await deleteBooking({
       bookingId:     req.params.id,
-      clubId:        CLUB_ID,
+      clubId:        clubIdOf(req),
       deletedBy:     req.user!.sub,
       deletedByRole: req.user!.role,
       reason,

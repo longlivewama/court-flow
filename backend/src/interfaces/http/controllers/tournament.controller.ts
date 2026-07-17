@@ -12,10 +12,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError, ForbiddenError, ConflictError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 const STAFF_ROLES = ['receptionist', 'owner', 'admin'];
 
@@ -42,7 +42,7 @@ export async function listTournaments(req: Request, res: Response, next: NextFun
        WHERE t.club_id = $1
        GROUP BY t.id
        ORDER BY (t.status IN ('registration_open','in_progress')) DESC, t.starts_at DESC`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     res.json({
@@ -79,12 +79,12 @@ export async function createTournament(req: Request, res: Response, next: NextFu
     const { rows } = await db.query(
       `INSERT INTO tournaments (club_id, name, description, registration_fee, max_teams, starts_at, ends_at, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [CLUB_ID, parsed.name, parsed.description ?? null, parsed.registrationFee,
+      [clubIdOf(req), parsed.name, parsed.description ?? null, parsed.registrationFee,
        parsed.maxTeams, parsed.startsAt, parsed.endsAt, req.user!.sub]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_CREATED,
       entityType: 'tournament', entityId: rows[0].id,
       newValues: {
@@ -105,7 +105,7 @@ export async function getTournament(req: Request, res: Response, next: NextFunct
   try {
     const { rows: tRows } = await db.query(
       `SELECT * FROM tournaments WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!tRows.length) throw new NotFoundError('Tournament', req.params.id);
     const t = tRows[0];
@@ -188,7 +188,7 @@ export async function updateTournament(req: Request, res: Response, next: NextFu
 
     const { rows: existingRows } = await db.query(
       `SELECT * FROM tournaments WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!existingRows.length) throw new NotFoundError('Tournament', req.params.id);
 
@@ -213,11 +213,11 @@ export async function updateTournament(req: Request, res: Response, next: NextFu
        RETURNING *`,
       [req.params.id, parsed.name ?? null, parsed.description ?? null,
        parsed.registrationFee ?? null, parsed.maxTeams ?? null,
-       parsed.startsAt ?? null, parsed.endsAt ?? null, parsed.status ?? null, CLUB_ID]
+       parsed.startsAt ?? null, parsed.endsAt ?? null, parsed.status ?? null, clubIdOf(req)]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_UPDATED,
       entityType: 'tournament', entityId: req.params.id,
       newValues: { ...parsed },
@@ -242,7 +242,7 @@ export async function registerTeam(req: Request, res: Response, next: NextFuncti
     const { rows: tRows } = await db.query(
       `SELECT t.*, (SELECT COUNT(*) FROM tournament_teams WHERE tournament_id = t.id)::int AS team_count
        FROM tournaments t WHERE t.id = $1 AND t.club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!tRows.length) throw new NotFoundError('Tournament', req.params.id);
     const t = tRows[0];
@@ -271,7 +271,7 @@ export async function registerTeam(req: Request, res: Response, next: NextFuncti
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_TEAM_REGISTERED,
       entityType: 'tournament_team', entityId: rows[0].id,
       newValues: { tournamentId: req.params.id, teamName: parsed.teamName, amountDue: Number(t.registration_fee) },
@@ -303,7 +303,7 @@ export async function recordTeamPayment(req: Request, res: Response, next: NextF
        FROM tournament_teams tt
        JOIN tournaments t ON t.id = tt.tournament_id
        WHERE tt.id = $1 AND tt.tournament_id = $2 AND t.club_id = $3`,
-      [req.params.teamId, req.params.id, CLUB_ID]
+      [req.params.teamId, req.params.id, clubIdOf(req)]
     );
     if (!teamRows.length) throw new NotFoundError('Team', req.params.teamId);
     const team = teamRows[0];
@@ -332,7 +332,7 @@ export async function recordTeamPayment(req: Request, res: Response, next: NextF
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_FEE_RECORDED,
       entityType: 'tournament_team', entityId: req.params.teamId,
       previousValues: { amountPaid: paid },
@@ -378,7 +378,7 @@ export async function generateBracket(req: Request, res: Response, next: NextFun
 
     const { rows: tRows } = await client.query(
       `SELECT * FROM tournaments WHERE id = $1 AND club_id = $2 FOR UPDATE`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!tRows.length) throw new NotFoundError('Tournament', req.params.id);
     const t = tRows[0];
@@ -453,7 +453,7 @@ export async function generateBracket(req: Request, res: Response, next: NextFun
     await client.query('COMMIT');
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_BRACKET_GENERATED,
       entityType: 'tournament', entityId: req.params.id,
       newValues: { teams: teams.length, bracketSize: size, rounds },
@@ -485,7 +485,7 @@ export async function recordMatchResult(req: Request, res: Response, next: NextF
       `SELECT m.* FROM tournament_matches m
        JOIN tournaments t ON t.id = m.tournament_id
        WHERE m.id = $1 AND m.tournament_id = $2 AND t.club_id = $3`,
-      [req.params.matchId, req.params.id, CLUB_ID]
+      [req.params.matchId, req.params.id, clubIdOf(req)]
     );
     if (!mRows.length) throw new NotFoundError('Match', req.params.matchId);
     const match = mRows[0];
@@ -524,7 +524,7 @@ export async function recordMatchResult(req: Request, res: Response, next: NextF
     }
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TOURNAMENT_RESULT_RECORDED,
       entityType: 'tournament_match', entityId: req.params.matchId,
       newValues: { winnerId: parsed.winnerId, score1: parsed.score1, score2: parsed.score2 },

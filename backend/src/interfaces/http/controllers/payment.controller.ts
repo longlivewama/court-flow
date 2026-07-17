@@ -13,8 +13,8 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 const LEDGER_STATUS_SQL = `
   CASE
@@ -30,7 +30,7 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
     const { status, from, to, search, page = '1', limit = '25' } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const params: unknown[] = [CLUB_ID];
+    const params: unknown[] = [clubIdOf(req)];
     const conditions: string[] = ['p.club_id = $1', 'b.deleted_at IS NULL'];
 
     if (status && status !== 'all') {

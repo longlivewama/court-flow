@@ -14,10 +14,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 // ═══ Coaches ══════════════════════════════════════════════════
 
@@ -37,7 +37,7 @@ export async function listCoaches(req: Request, res: Response, next: NextFunctio
        WHERE c.club_id = $1 ${includeInactive ? '' : 'AND c.is_active = TRUE'}
        GROUP BY c.id
        ORDER BY c.name`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     res.json({
@@ -69,12 +69,12 @@ export async function createCoach(req: Request, res: Response, next: NextFunctio
     const { rows } = await db.query(
       `INSERT INTO coaches (club_id, name, phone, specialty, hourly_rate, commission_pct)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [CLUB_ID, parsed.name, parsed.phone ?? null, parsed.specialty ?? null,
+      [clubIdOf(req), parsed.name, parsed.phone ?? null, parsed.specialty ?? null,
        parsed.hourlyRate, parsed.commissionPct]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.COACH_CREATED,
       entityType: 'coach', entityId: rows[0].id,
       newValues: { name: parsed.name, hourlyRate: parsed.hourlyRate, commissionPct: parsed.commissionPct },
@@ -91,7 +91,7 @@ export async function updateCoach(req: Request, res: Response, next: NextFunctio
 
     const { rows: existingRows } = await db.query(
       `SELECT * FROM coaches WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!existingRows.length) throw new NotFoundError('Coach', req.params.id);
     const existing = existingRows[0];
@@ -108,11 +108,11 @@ export async function updateCoach(req: Request, res: Response, next: NextFunctio
        WHERE id = $1 AND club_id = $8
        RETURNING *`,
       [req.params.id, parsed.name ?? null, parsed.phone ?? null, parsed.specialty ?? null,
-       parsed.hourlyRate ?? null, parsed.commissionPct ?? null, parsed.isActive ?? null, CLUB_ID]
+       parsed.hourlyRate ?? null, parsed.commissionPct ?? null, parsed.isActive ?? null, clubIdOf(req)]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.COACH_UPDATED,
       entityType: 'coach', entityId: req.params.id,
       previousValues: {
@@ -147,7 +147,7 @@ export async function listSessions(req: Request, res: Response, next: NextFuncti
        WHERE ts.club_id = $1
          AND ts.start_time >= NOW() - ($2 || ' days')::interval
        ORDER BY ts.start_time DESC`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // Ledger headline: collected / coach payouts / club profit / uncollected
@@ -160,7 +160,7 @@ export async function listSessions(req: Request, res: Response, next: NextFuncti
          COUNT(*) FILTER (WHERE NOT is_paid AND status <> 'cancelled')::int AS unpaid_count
        FROM training_sessions
        WHERE club_id = $1 AND start_time >= NOW() - ($2 || ' days')::interval`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
     const s = summaryRows[0];
 
@@ -207,7 +207,7 @@ export async function createSession(req: Request, res: Response, next: NextFunct
 
     const { rows: coachRows } = await db.query(
       `SELECT * FROM coaches WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
-      [parsed.coachId, CLUB_ID]
+      [parsed.coachId, clubIdOf(req)]
     );
     if (!coachRows.length) throw new NotFoundError('Coach', parsed.coachId);
     const coach = coachRows[0];
@@ -223,13 +223,13 @@ export async function createSession(req: Request, res: Response, next: NextFunct
           start_time, end_time, price, coach_share, club_share, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
-      [CLUB_ID, parsed.coachId, parsed.customerId ?? null, parsed.customerName ?? null,
+      [clubIdOf(req), parsed.coachId, parsed.customerId ?? null, parsed.customerName ?? null,
        parsed.courtId ?? null, parsed.startTime, parsed.endTime,
        price, coachShare, clubShare, parsed.notes ?? null, req.user!.sub]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TRAINING_SESSION_CREATED,
       entityType: 'training_session', entityId: rows[0].id,
       newValues: { coachId: parsed.coachId, price, coachShare, clubShare, startTime: parsed.startTime },
@@ -261,12 +261,12 @@ export async function updateSession(req: Request, res: Response, next: NextFunct
              updated_at = NOW()
        WHERE id = $1 AND club_id = $4
        RETURNING *`,
-      [req.params.id, parsed.status ?? null, parsed.notes ?? null, CLUB_ID]
+      [req.params.id, parsed.status ?? null, parsed.notes ?? null, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Training session', req.params.id);
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TRAINING_SESSION_UPDATED,
       entityType: 'training_session', entityId: req.params.id,
       newValues: { ...parsed },
@@ -290,12 +290,12 @@ export async function markSessionPaid(req: Request, res: Response, next: NextFun
          SET is_paid = TRUE, payment_method = $2, paid_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND club_id = $3 AND is_paid = FALSE
        RETURNING *`,
-      [req.params.id, parsed.method, CLUB_ID]
+      [req.params.id, parsed.method, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Unpaid training session', req.params.id);
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.TRAINING_SESSION_PAID,
       entityType: 'training_session', entityId: req.params.id,
       newValues: {

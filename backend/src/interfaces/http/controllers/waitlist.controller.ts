@@ -10,10 +10,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 const joinSchema = z.object({
   courtId:      z.string().uuid().nullable().optional(),   // null/omitted = any court
@@ -33,11 +33,11 @@ export async function joinWaitlist(req: Request, res: Response, next: NextFuncti
     const { rows } = await db.query(
       `INSERT INTO waitlist_entries (club_id, user_id, court_id, desired_start, desired_end)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [CLUB_ID, req.user!.sub, parsed.courtId ?? null, parsed.desiredStart, parsed.desiredEnd]
+      [clubIdOf(req), req.user!.sub, parsed.courtId ?? null, parsed.desiredStart, parsed.desiredEnd]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.WAITLIST_JOINED,
       entityType: 'waitlist_entry', entityId: rows[0].id,
       newValues: { courtId: parsed.courtId ?? 'any', desiredStart: parsed.desiredStart, desiredEnd: parsed.desiredEnd },
@@ -59,7 +59,7 @@ export async function myWaitlist(req: Request, res: Response, next: NextFunction
        LEFT JOIN courts c ON c.id = w.court_id
        WHERE w.club_id = $1 AND w.user_id = $2
        ORDER BY w.created_at DESC`,
-      [CLUB_ID, req.user!.sub]
+      [clubIdOf(req), req.user!.sub]
     );
 
     const { rows: holds } = await db.query(
@@ -69,7 +69,7 @@ export async function myWaitlist(req: Request, res: Response, next: NextFunction
        JOIN courts c ON c.id = h.court_id
        WHERE h.club_id = $1 AND h.user_id = $2
          AND h.claimed_at IS NULL AND h.expires_at > NOW()`,
-      [CLUB_ID, req.user!.sub]
+      [clubIdOf(req), req.user!.sub]
     );
 
     res.json({ entries, activeHolds: holds });
@@ -83,7 +83,7 @@ export async function leaveWaitlist(req: Request, res: Response, next: NextFunct
       `DELETE FROM waitlist_entries
        WHERE id = $1 AND club_id = $2 AND user_id = $3 AND fulfilled_at IS NULL
        RETURNING id`,
-      [req.params.id, CLUB_ID, req.user!.sub]
+      [req.params.id, clubIdOf(req), req.user!.sub]
     );
     if (!rows.length) throw new NotFoundError('Open waitlist entry', req.params.id);
     res.json({ message: 'Removed from the waitlist' });

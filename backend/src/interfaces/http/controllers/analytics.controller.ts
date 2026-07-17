@@ -17,8 +17,8 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 
-const CLUB_ID = process.env.CLUB_ID!;
 const TZ = 'Africa/Cairo';
 
 const VERIFIED = `('confirmed','checked_in','completed','no_show')`;
@@ -42,14 +42,14 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        WHERE b.club_id = $1
          AND b.deleted_at IS NULL
          AND b.start_time >= NOW() - ($2 || ' days')::interval`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     const { rows: subRows } = await db.query(
       `SELECT COUNT(*)::int AS active,
               COALESCE(SUM(weekly_price * 4), 0)::numeric AS mrr
        FROM subscriptions WHERE club_id = $1 AND status = 'active'`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     const { rows: custRows } = await db.query(
@@ -57,7 +57,7 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        FROM users
        WHERE club_id = $1 AND role = 'customer'
          AND created_at >= NOW() - ($2 || ' days')::interval`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // ── Bookings + revenue per day ───────────────────────────────
@@ -69,7 +69,7 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        WHERE b.club_id = $1 AND b.deleted_at IS NULL
          AND b.start_time >= NOW() - ($2 || ' days')::interval
        GROUP BY day ORDER BY day`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // Dense series: charts need every day present even with zero bookings
@@ -101,13 +101,13 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        WHERE c.club_id = $1 AND c.is_active = TRUE
        GROUP BY c.id, c.name, c.number
        ORDER BY c.number`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // Available open hours per court over the range, from configured working hours
     const { rows: whRows } = await db.query<{ open_time: string; close_time: string; is_closed: boolean }>(
       `SELECT open_time, close_time, is_closed FROM working_hours WHERE club_id = $1`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
     const weeklyOpenMinutes = whRows.reduce((sum, wh) => {
       if (wh.is_closed) return sum;
@@ -145,7 +145,7 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        WHERE b.club_id = $1 AND b.deleted_at IS NULL
          AND b.start_time >= DATE_TRUNC('month', NOW()) - INTERVAL '5 months'
        GROUP BY month ORDER BY month`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     const { rows: growthRows } = await db.query(
@@ -155,7 +155,7 @@ export async function getAnalyticsOverview(req: Request, res: Response, next: Ne
        WHERE club_id = $1 AND role = 'customer'
          AND created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '5 months'
        GROUP BY month ORDER BY month`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     // Dense 6-month series

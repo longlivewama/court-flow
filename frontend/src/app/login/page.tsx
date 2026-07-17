@@ -13,6 +13,9 @@ export default function LoginPage() {
   const router  = useRouter();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [form, setForm]       = useState({ email: '', password: '' });
+  const [clubSlug, setClubSlug] = useState('');
+  // Revealed when the same email exists in several club workspaces
+  const [needsSlug, setNeedsSlug] = useState(false);
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -21,12 +24,19 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const { data } = await api.post('/auth/login', form);
+      const payload: Record<string, string> = { ...form };
+      if (needsSlug && clubSlug.trim()) payload.clubSlug = clubSlug.trim().toLowerCase();
+      const { data } = await api.post('/auth/login', payload);
       setAuth(data.user, data.accessToken);
       router.replace('/dashboard');
     } catch (err: unknown) {
-      const msg = (err as any)?.response?.data?.message ?? 'Login failed. Please try again.';
-      setError(msg);
+      const resp = (err as any)?.response?.data;
+      if (resp?.details?.code === 'CLUB_SLUG_REQUIRED') {
+        setNeedsSlug(true);
+        setError('This email belongs to multiple club workspaces — enter your club slug below.');
+      } else {
+        setError(resp?.message ?? 'Login failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -87,6 +97,28 @@ export default function LoginPage() {
             />
           </div>
 
+          {needsSlug && (
+            <motion.div
+              className="input-group"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              transition={{ duration: 0.2 }}
+              style={{ overflow: 'hidden' }}
+            >
+              <label htmlFor="clubSlug" className="input-label">Club workspace slug</label>
+              <input
+                id="clubSlug"
+                type="text"
+                className="input"
+                placeholder="e.g. nile-padel-club"
+                value={clubSlug}
+                onChange={(e) => setClubSlug(e.target.value)}
+                autoComplete="organization"
+                pattern="[a-z0-9][a-z0-9-]{1,61}[a-z0-9]"
+              />
+            </motion.div>
+          )}
+
           {error && (
             <motion.div
               initial={{ opacity: 0, y: -6 }}
@@ -134,6 +166,12 @@ export default function LoginPage() {
             New customer?{' '}
             <a href="/register" style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
               Create an account
+            </a>
+          </div>
+          <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-secondary)' }}>
+            Running a club?{' '}
+            <a href="/register-club" style={{ color: 'var(--accent-green-text)', fontWeight: 500 }}>
+              Register your club workspace
             </a>
           </div>
         </form>
