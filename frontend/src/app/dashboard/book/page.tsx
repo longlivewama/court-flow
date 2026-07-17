@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { api } from '@/lib/api';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/lib/stores/auth.store';

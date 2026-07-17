@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { format } from 'date-fns';

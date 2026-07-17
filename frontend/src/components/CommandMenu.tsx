@@ -5,7 +5,7 @@
  * Full keyboard navigation for Receptionist and Owner workflows.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { useRouter } from 'next/navigation';
 import {
   Search, UserCheck, CreditCard, Calendar, BarChart2,

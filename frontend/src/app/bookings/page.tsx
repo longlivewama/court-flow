@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { api } from '@/lib/api';
 import { StateChip, BookingStatus } from '@/components/StateChip';
 import { format } from 'date-fns';

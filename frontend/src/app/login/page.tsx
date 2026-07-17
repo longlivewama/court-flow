@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { api } from '@/lib/api';
 import type { Metadata } from 'next';

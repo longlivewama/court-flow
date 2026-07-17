@@ -6,7 +6,7 @@
  * Displays the immutable audit_logs table with precise timestamps.
  */
 import { Fragment, useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { Shield, Search } from 'lucide-react';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
