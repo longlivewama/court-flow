@@ -6,7 +6,7 @@
  * cancellation policy, and deposit requirement.
  */
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { Save, Settings, Clock, CreditCard, Phone, Building2 } from 'lucide-react';
 import { ZodError } from 'zod';
 import { api } from '@/lib/api';

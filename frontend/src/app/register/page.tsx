@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { api } from '@/lib/api';
 
 const SPRING = { type: 'spring' as const, stiffness: 360, damping: 28 };

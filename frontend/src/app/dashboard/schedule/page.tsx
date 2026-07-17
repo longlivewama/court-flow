@@ -7,7 +7,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft, ChevronRight, X, Loader2, Plus,
   CheckCircle2, XCircle,
@@ -17,7 +17,8 @@ import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { StateChip, BookingStatus } from '@/components/StateChip';
-import { BookingSheet } from '@/components/BookingSheet';
+import { BookingSheet, CourtBlueprint } from '@/components/BookingSheet';
+import { SPRING_GRID } from '@/lib/motion-tokens';
 
 const TIMEZONE    = 'Africa/Cairo';
 const HOUR_HEIGHT = 96; // px per hour – generous enough to prevent card overflow
@@ -147,6 +148,37 @@ function hourOptionLabel(h: number): string {
   if (h % 24 === 0)  return `${base} (Midnight)`;
   if (h % 24 === 12) return `${base} (Noon)`;
   return base;
+}
+
+/** Miniature padel court etched into each column header — low-opacity
+ *  wireframe strokes only, pure decoration behind the court label. */
+function CourtHeaderLines() {
+  return (
+    <svg
+      viewBox="0 0 120 58" preserveAspectRatio="none" aria-hidden
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.5, pointerEvents: 'none' }}
+    >
+      <rect x="18" y="10" width="84" height="40" rx="3"
+        stroke="var(--border-focus)" strokeWidth="1" fill="none" opacity="0.35" />
+      <line x1="60" y1="10" x2="60" y2="50" stroke="var(--border-focus)" strokeWidth="1" strokeDasharray="2 3" opacity="0.3" />
+      <line x1="32" y1="10" x2="32" y2="50" stroke="var(--border)" strokeWidth="1" opacity="0.5" />
+      <line x1="88" y1="10" x2="88" y2="50" stroke="var(--border)" strokeWidth="1" opacity="0.5" />
+      <line x1="32" y1="30" x2="88" y2="30" stroke="var(--border)" strokeWidth="1" opacity="0.5" />
+    </svg>
+  );
+}
+
+/**
+ * Pointer-aware radial glow: writes the registered --mx/--my custom
+ * properties straight onto the column's glow layer (its first child),
+ * so cursor tracking never touches React state or triggers re-renders.
+ */
+function trackSlotGlow(e: React.PointerEvent<HTMLDivElement>) {
+  const glow = e.currentTarget.firstElementChild as HTMLElement | null;
+  if (!glow || !glow.classList.contains('slot-glow')) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  glow.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+  glow.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
 }
 
 function getPaymentState(b: Booking) {
@@ -708,7 +740,7 @@ export default function SchedulePage() {
       )}
 
       {/* ── Grid Container (virtualized on both axes) ── */}
-      <div ref={scrollRef} style={{
+      <motion.div layoutScroll ref={scrollRef} style={{
         overflowX: 'auto',
         overflowY: 'auto',
         maxHeight: 'calc(100vh - 260px)',
@@ -757,6 +789,8 @@ export default function SchedulePage() {
                       textAlign: 'center',
                       boxSizing: 'border-box',
                     }}>
+                      {/* Miniature court wireframe backdrop */}
+                      <CourtHeaderLines />
                       {/* Subtle top accent bar */}
                       <div style={{
                         position: 'absolute', top: 0, left: '20%', right: '20%', height: 2,
@@ -764,12 +798,13 @@ export default function SchedulePage() {
                         borderRadius: '0 0 4px 4px',
                       }} />
                       <div style={{
+                        position: 'relative',
                         fontSize: 13, fontWeight: 800,
                         color: '#f4f4f5',
                         letterSpacing: '0.04em',
                         textTransform: 'uppercase',
                       }}>Court {court.number}</div>
-                      <div style={{ fontSize: 10, color: '#71717a', marginTop: 3, fontWeight: 500, letterSpacing: '0.03em' }}>{court.name}</div>
+                      <div style={{ position: 'relative', fontSize: 10, color: '#71717a', marginTop: 3, fontWeight: 500, letterSpacing: '0.03em' }}>{court.name}</div>
                     </div>
                   );
                 })}
@@ -836,7 +871,7 @@ export default function SchedulePage() {
                   const courtBlocked  = getBlockedForCourt(court.id);
 
                   return (
-                    <div key={court.id} style={{
+                    <div key={court.id} onPointerMove={trackSlotGlow} style={{
                       position: 'absolute',
                       left: vc.start, width: vc.size,
                       top: 0, height: rowsTotal,
@@ -844,6 +879,8 @@ export default function SchedulePage() {
                       boxSizing: 'border-box',
                       zIndex: 10,
                     }}>
+                      {/* Pointer-tracked radial glow layer — must stay first child */}
+                      <div className="slot-glow" aria-hidden />
                       {/* Zebra row backgrounds + horizontal grid lines (visible rows only) */}
                       {virtualRows.map((vr) => (
                         <div key={HOURS[vr.index]} style={{
@@ -875,8 +912,12 @@ export default function SchedulePage() {
                         const endLbl   = format(toZonedTime(new Date(bp.end_at),   TIMEZONE), 'hh:mm aa');
 
                         return (
-                          <div
+                          <motion.div
                             key={bp.id}
+                            layout
+                            layoutId={`schedule-${court.id}-${bp.id}`}
+                            initial={false}
+                            transition={SPRING_GRID}
                             title={isStaff ? `${cfg.icon} ${bp.title} (${startLbl}–${endLbl})` : cfg.publicLabel}
                             style={{
                               position: 'absolute', top, height: h, left: 3, right: 3,
@@ -925,7 +966,7 @@ export default function SchedulePage() {
                                 {bp.reason_type.replace('_', ' ')}
                               </span>
                             )}
-                          </div>
+                          </motion.div>
                         );
                       })}
 
@@ -944,12 +985,16 @@ export default function SchedulePage() {
                         return (
                           <motion.div
                             key={b.id}
+                            // Shared layoutId: cells morph via spring physics
+                            // when the grid geometry changes instead of snapping
+                            layout
+                            layoutId={`schedule-${court.id}-${b.id}`}
                             // No mount animation: virtualized cards re-mount on
                             // every scroll-in and a fade would read as flicker
                             initial={false}
                             animate={{ opacity: 1, scale: 1 }}
                             whileHover={{ scale: 1.015, zIndex: 30 }}
-                            transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+                            transition={SPRING_GRID}
                             onClick={() => setSelected(b)}
                             role="button"
                             aria-label={`Booking for ${b.first_name} ${b.last_name}`}
@@ -1031,7 +1076,7 @@ export default function SchedulePage() {
             </div>
           </div>
         )}
-      </div>
+      </motion.div>
 
       {/* ── Booking detail sheet ── */}
       <BookingSheet open={!!selected} onClose={() => setSelected(null)} title="Booking Details">
@@ -1055,7 +1100,10 @@ export default function SchedulePage() {
               ].map(([label, value]) => (
                 <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 8 }}>
                   <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>{label}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', textAlign: 'right' }}>{value}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', textAlign: 'right', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                    {label === 'Court' && <CourtBlueprint width={34} animate />}
+                    {value}
+                  </span>
                 </div>
               ))}
             </div>
@@ -1087,7 +1135,31 @@ export default function SchedulePage() {
         )}
       </AnimatePresence>
 
-      <style>{`@keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }`}</style>
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+
+        /* Pointer-aware radial glow. Registered custom properties let the
+           cursor position itself be transitioned natively by the compositor;
+           values are written straight to the DOM (no React re-renders). */
+        @property --mx { syntax: '<percentage>'; inherits: false; initial-value: 50%; }
+        @property --my { syntax: '<percentage>'; inherits: false; initial-value: 50%; }
+        .slot-glow {
+          --mx: 50%;
+          --my: 50%;
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          pointer-events: none;
+          opacity: 0;
+          background: radial-gradient(160px circle at var(--mx) var(--my),
+            rgba(34,197,94,0.08), transparent 70%);
+          transition:
+            opacity var(--dur-normal) var(--ease-standard),
+            --mx var(--dur-fast) linear,
+            --my var(--dur-fast) linear;
+        }
+        div:hover > .slot-glow { opacity: 1; }
+      `}</style>
     </div>
   );
 }

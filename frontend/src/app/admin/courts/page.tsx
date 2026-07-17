@@ -5,7 +5,7 @@
  * Create, update, delete courts; change statuses; manage blocked periods.
  */
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Edit2, Trash2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Toggle } from '@/components/ui/Toggle';

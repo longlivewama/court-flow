@@ -5,7 +5,7 @@
  * Shows today's confirmed bookings and allows instant check-in.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { UserCheck, Clock, Search } from 'lucide-react';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';

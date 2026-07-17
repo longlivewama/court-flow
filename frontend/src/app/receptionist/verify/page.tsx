@@ -8,7 +8,7 @@
  * and confirm the booking in one glance.
  */
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { CheckCircle, XCircle, Eye, Wallet, CreditCard, Phone, Clock } from 'lucide-react';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';

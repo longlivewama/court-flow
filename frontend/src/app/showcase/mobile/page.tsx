@@ -8,11 +8,27 @@
  * All three are interactive React state machines, not static mockups.
  */
 import { useMemo, useState } from 'react';
+import { motion, type Variants } from 'motion/react';
 import {
   CalendarCheck, ChevronRight, Home, Search, User,
   Repeat, Bell, MapPin,
 } from 'lucide-react';
 import { Stepper } from '@/components/ui/Stepper';
+import { CourtBlueprint } from '@/components/BookingSheet';
+import { getDur, EASE_STANDARD } from '@/lib/motion-tokens';
+
+// Staggered entrance for the member dashboard viewport sections
+const ENTRANCE_CONTAINER: Variants = {
+  hidden:  {},
+  visible: { transition: { staggerChildren: 0.06, delayChildren: 0.04 } },
+};
+const ENTRANCE_SECTION: Variants = {
+  hidden:  { opacity: 0, y: 8 },
+  visible: {
+    opacity: 1, y: 0,
+    transition: { duration: getDur('--dur-slow'), ease: EASE_STANDARD },
+  },
+};
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const HOURS = [16, 17, 18, 19, 20, 21, 22];
@@ -90,8 +106,13 @@ export default function MobileShowcasePage() {
         {/* ── Phone 1 · Home dashboard ─────────────────────── */}
         <div className="phone-frame">
           <div className="phone-notch" />
-          <div className="phone-screen">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <motion.div
+            className="phone-screen"
+            variants={ENTRANCE_CONTAINER}
+            initial="hidden"
+            animate="visible"
+          >
+            <motion.div variants={ENTRANCE_SECTION} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Good evening</div>
                 <div style={{ fontSize: 18, fontWeight: 600 }}>Ahmed 👋</div>
@@ -107,15 +128,21 @@ export default function MobileShowcasePage() {
                   borderRadius: 99, background: 'var(--accent-green)',
                 }} />
               </div>
-            </div>
+            </motion.div>
 
             {/* Next session */}
-            <div className="card-sm" style={{ background: 'var(--accent-green-bg)', borderColor: 'var(--success-border)' }}>
-              <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--accent-green-text)', marginBottom: 6 }}>
-                Next session
-              </div>
-              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
-                Tonight · 19:00–21:00
+            <motion.div variants={ENTRANCE_SECTION} className="card-sm" style={{ background: 'var(--accent-green-bg)', borderColor: 'var(--success-border)' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--accent-green-text)', marginBottom: 6 }}>
+                    Next session
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Tonight · 19:00–21:00
+                  </div>
+                </div>
+                {/* Court wireframe — instant visual context for the venue */}
+                <CourtBlueprint width={46} />
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
                 <MapPin size={11} />
@@ -124,10 +151,10 @@ export default function MobileShowcasePage() {
                   <Repeat size={10} /> VIP
                 </span>
               </div>
-            </div>
+            </motion.div>
 
             {/* Quick stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <motion.div variants={ENTRANCE_SECTION} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {[
                 { label: 'Sessions', value: '18', sub: 'this season' },
                 { label: 'Tier', value: 'Gold', sub: '2 to Platinum' },
@@ -138,10 +165,10 @@ export default function MobileShowcasePage() {
                   <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{s.sub}</div>
                 </div>
               ))}
-            </div>
+            </motion.div>
 
             {/* Recent */}
-            <div>
+            <motion.div variants={ENTRANCE_SECTION}>
               <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 8 }}>Recent activity</div>
               {[
                 { t: 'Court 2 · 2h', d: 'Sun 12 Jul', s: 'completed' },
@@ -159,8 +186,8 @@ export default function MobileShowcasePage() {
                   <span className={`badge badge-${r.s}`} style={{ fontSize: 9 }}>{r.s}</span>
                 </div>
               ))}
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
           <PhoneTabBar active="home" />
         </div>
 

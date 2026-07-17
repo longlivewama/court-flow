@@ -6,7 +6,7 @@
  * buttons, inputs, badges, toggles, steppers, toasts, skeletons, modals.
  */
 import { useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { CalendarPlus, Check, Info, AlertTriangle, XCircle, X } from 'lucide-react';
 import { Toggle } from '@/components/ui/Toggle';
 import { Stepper } from '@/components/ui/Stepper';

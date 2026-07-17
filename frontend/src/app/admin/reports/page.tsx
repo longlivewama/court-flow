@@ -5,7 +5,7 @@
  * Supports PDF, Excel, and CSV formats.
  */
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { BarChart2, Download, FileText, Table } from 'lucide-react';
 import { api } from '@/lib/api';
 

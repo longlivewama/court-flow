@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { motion, type Variants } from 'motion/react';
 import {
   CalendarPlus, CalendarCheck, Banknote, ShieldAlert, CheckCircle2,
 } from 'lucide-react';
@@ -26,10 +27,41 @@ import { StateChip, BookingStatus } from '@/components/StateChip';
 import { NewBookingPanel } from '@/components/NewBookingPanel';
 import { BookingDetailsPanel } from '@/components/BookingDetailsPanel';
 import { catColor, SERIES_GREEN } from '@/lib/chartColors';
+import { getDur, EASE_STANDARD } from '@/lib/motion-tokens';
 import type { FinancialSummary } from '@/lib/schemas';
 
 const TIMEZONE = 'Africa/Cairo';
 const TREND_DAYS = 14;
+
+// Organic entrance: sections cascade in once auth has resolved.
+// Durations read from the CSS tokens so globals.css stays authoritative.
+const ENTRANCE_CONTAINER: Variants = {
+  hidden:  {},
+  visible: { transition: { staggerChildren: 0.06, delayChildren: 0.04 } },
+};
+const ENTRANCE_SECTION: Variants = {
+  hidden:  { opacity: 0, y: 8 },
+  visible: {
+    opacity: 1, y: 0,
+    transition: { duration: getDur('--dur-slow'), ease: EASE_STANDARD },
+  },
+};
+
+/** Minimal court/racket wireframe — instant visual context on booking rows. */
+function CourtRowIcon() {
+  return (
+    <svg width={22} height={13} viewBox="0 0 22 13" fill="none" aria-hidden
+      style={{ flexShrink: 0, opacity: 0.65 }}>
+      <rect x="0.75" y="0.75" width="20.5" height="11.5" rx="1.5"
+        stroke="var(--text-tertiary)" strokeWidth="1" />
+      <line x1="11" y1="0.75" x2="11" y2="12.25"
+        stroke="var(--accent-green)" strokeWidth="1" strokeDasharray="1.5 1.8" opacity="0.7" />
+      <line x1="4.5" y1="0.75" x2="4.5" y2="12.25" stroke="var(--text-tertiary)" strokeWidth="0.75" opacity="0.55" />
+      <line x1="17.5" y1="0.75" x2="17.5" y2="12.25" stroke="var(--text-tertiary)" strokeWidth="0.75" opacity="0.55" />
+      <line x1="4.5" y1="6.5" x2="17.5" y2="6.5" stroke="var(--text-tertiary)" strokeWidth="0.75" opacity="0.55" />
+    </svg>
+  );
+}
 
 const TOOLTIP_STYLE: React.CSSProperties = {
   background: 'var(--surface-2)',
@@ -145,11 +177,13 @@ export default function DashboardPage() {
     [rangeBookings]
   );
 
+  // Entrance only begins once auth has resolved to a staff user —
+  // isStaff false covers both "still resolving" and "not authorized".
   if (!isStaff) return null;
 
   return (
-    <>
-      <div className="page-header">
+    <motion.div variants={ENTRANCE_CONTAINER} initial="hidden" animate="visible">
+      <motion.div variants={ENTRANCE_SECTION} className="page-header">
         <div>
           <h1 className="page-title">Dashboard</h1>
           <p className="page-subtitle">
@@ -160,7 +194,7 @@ export default function DashboardPage() {
           <CalendarPlus size={14} />
           New Booking
         </button>
-      </div>
+      </motion.div>
 
       {error && (
         <div role="alert" style={{
@@ -173,7 +207,7 @@ export default function DashboardPage() {
       )}
 
       {/* ── KPI row ─────────────────────────────────────────── */}
-      <div className="stat-grid" style={{ marginBottom: 24 }}>
+      <motion.div variants={ENTRANCE_SECTION} className="stat-grid" style={{ marginBottom: 24 }}>
         {loading ? (
           [0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 108 }} />)
         ) : (
@@ -218,10 +252,10 @@ export default function DashboardPage() {
             </div>
           </>
         )}
-      </div>
+      </motion.div>
 
       {/* ── Charts row ──────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 16, marginBottom: 24 }}>
+      <motion.div variants={ENTRANCE_SECTION} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 16, marginBottom: 24 }}>
         {/* Bookings trend */}
         <div className="chart-card">
           <div>
@@ -332,10 +366,10 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
-      </div>
+      </motion.div>
 
       {/* ── Recent bookings ─────────────────────────────────── */}
-      <div className="chart-card" style={{ padding: 0 }}>
+      <motion.div variants={ENTRANCE_SECTION} className="chart-card" style={{ padding: 0 }}>
         <div style={{ padding: '18px 24px 0' }}>
           <div className="chart-title">Recent bookings</div>
           <div className="chart-sub">latest activity · click a row for details</div>
@@ -366,7 +400,12 @@ export default function DashboardPage() {
                     <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
                       {b.first_name} {b.last_name}
                     </td>
-                    <td>{b.court_name}</td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        <CourtRowIcon />
+                        {b.court_name}
+                      </span>
+                    </td>
                     <td>
                       {format(toZonedTime(new Date(b.start_time), TIMEZONE), 'd MMM · HH:mm')}
                     </td>
@@ -385,7 +424,7 @@ export default function DashboardPage() {
             </table>
           </div>
         )}
-      </div>
+      </motion.div>
 
       <NewBookingPanel open={panelOpen} onClose={() => setPanelOpen(false)} onCreated={load} />
       <BookingDetailsPanel
@@ -394,6 +433,6 @@ export default function DashboardPage() {
         onClose={() => setDetailsId(null)}
         onChanged={load}
       />
-    </>
+    </motion.div>
   );
 }

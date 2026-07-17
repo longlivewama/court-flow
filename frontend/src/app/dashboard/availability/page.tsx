@@ -7,7 +7,7 @@
  * Free slots are clickable and deep-link into the booking form.
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { format, addDays, addMinutes } from 'date-fns';
