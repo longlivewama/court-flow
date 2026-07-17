@@ -1,11 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 // Strictly bound the refund payload: an unvalidated req.body previously let a
 // caller record a negative, zero, or over-total refund. amount is additionally
@@ -28,7 +28,7 @@ export async function createRefundRequest(req: Request, res: Response, next: Nex
       `SELECT b.id, b.total_price, p.id AS payment_id, p.status AS payment_status
        FROM bookings b JOIN payments p ON p.booking_id=b.id
        WHERE b.id=$1 AND b.club_id=$2`,
-      [bookingId, CLUB_ID]
+      [bookingId, clubIdOf(req)]
     );
     if (!bookingRows.length) throw new NotFoundError('Booking', bookingId);
     const booking = bookingRows[0];
@@ -50,7 +50,7 @@ export async function createRefundRequest(req: Request, res: Response, next: Nex
       [bookingId, booking.payment_id, req.user!.sub, amount, percent ?? null, reason, internalNotes ?? null]
     );
 
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'receptionist',
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'receptionist',
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.REFUND_REQUESTED, entityType: 'refund',
       entityId: rows[0].id, newValues: rows[0] });
 
@@ -66,7 +66,7 @@ export async function listRefunds(req: Request, res: Response, next: NextFunctio
        FROM refunds r JOIN bookings b ON b.id=r.booking_id
        JOIN users u ON u.id=b.customer_id
        WHERE b.club_id=$1 ORDER BY r.created_at DESC`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
     res.json(rows);
   } catch (err) { next(err); }
@@ -87,7 +87,7 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
          JOIN bookings b ON b.id = r.booking_id
          WHERE r.id = $1 AND b.club_id = $2
          FOR UPDATE OF r`,
-        [req.params.id, CLUB_ID]
+        [req.params.id, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Refund', req.params.id);
       if (rows[0].status !== 'pending') throw new ValidationError('Refund is not in pending status');
@@ -101,7 +101,7 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
         [req.params.id, newStatus, req.user!.sub, internalNotes ?? null]
       );
 
-      await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+      await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
         ipAddress: req.ip,
         actionType: action === 'approve' ? AUDIT_ACTIONS.REFUND_APPROVED : AUDIT_ACTIONS.REFUND_REJECTED,
         entityType: 'refund', entityId: req.params.id, newValues: { status: newStatus } });

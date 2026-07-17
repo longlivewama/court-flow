@@ -26,7 +26,6 @@ import { emailService } from '../../../infrastructure/email/email.service';
 import { logger } from '../../../shared/logger';
 import { UnauthorizedError, ValidationError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
 function webhookSecret(): string {
@@ -94,14 +93,18 @@ export async function handlePaymentWebhook(req: Request, res: Response, next: Ne
         return { bookingStatus: 'unchanged', paymentStatus: 'unchanged', duplicate: true, email: null };
       }
 
-      // 4. Load + lock the booking, then walk the FSM
+      // 4. Load + lock the booking, then walk the FSM.
+      // Multi-tenant: the webhook is unauthenticated, so the tenant scope is
+      // derived from the booking row itself — the HMAC signature already
+      // proves the gateway vouches for this exact booking id.
       const { rows: bookingRows } = await client.query<{
         id: string; status: string; customer_id: string; start_time: Date;
         total_price: string; discount_amount: string; deposit_amount: string;
+        club_id: string;
       }>(
-        `SELECT id, status, customer_id, start_time, total_price, discount_amount, deposit_amount
-         FROM bookings WHERE id = $1 AND club_id = $2 AND deleted_at IS NULL FOR UPDATE`,
-        [payload.bookingId, CLUB_ID]
+        `SELECT id, status, customer_id, start_time, total_price, discount_amount, deposit_amount, club_id
+         FROM bookings WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+        [payload.bookingId]
       );
       if (!bookingRows.length) throw new ValidationError('Unknown booking for webhook event');
       const booking = bookingRows[0];
@@ -152,7 +155,7 @@ export async function handlePaymentWebhook(req: Request, res: Response, next: Ne
       );
 
       await auditLog({
-        clubId: CLUB_ID,
+        clubId: booking.club_id,
         actionType: AUDIT_ACTIONS.PAYMENT_WEBHOOK_PROCESSED,
         entityType: 'booking', entityId: booking.id,
         newValues: {

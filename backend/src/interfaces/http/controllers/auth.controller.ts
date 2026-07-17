@@ -13,9 +13,9 @@ import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.ser
 import { ValidationError, UnauthorizedError, NotFoundError } from '../../../shared/errors';
 import { logger } from '../../../shared/logger';
 import { withTransaction } from '../../../infrastructure/database/client';
+import { clubIdOf, defaultClubId } from '../../../shared/tenant';
 import { z } from 'zod';
 
-const CLUB_ID = process.env.CLUB_ID!;
 const LOCKOUT_ATTEMPTS = 5;
 const LOCKOUT_MINUTES  = 15;
 const isProduction = process.env.NODE_ENV === 'production';
@@ -31,28 +31,77 @@ const PASSWORD_POLICY = z
   .regex(/[A-Za-z]/, 'Password must contain at least one letter')
   .regex(/[0-9]/, 'Password must contain at least one number');
 
+// Tenant slug: the club's unique, immutable domain prefix. Lowercase kebab,
+// 3–63 chars, no leading/trailing hyphen — mirrors the DB CHECK constraint.
+const SLUG_POLICY = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3, 'Club slug must be at least 3 characters')
+  .max(63, 'Club slug must be at most 63 characters')
+  .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/, 'Club slug may only contain lowercase letters, numbers and inner hyphens');
+
+// Prefixes that can never become tenant slugs — they collide with routing,
+// infrastructure hostnames or the product's own brand.
+const RESERVED_SLUGS = new Set([
+  'www', 'api', 'app', 'admin', 'auth', 'dashboard', 'login', 'register',
+  'register-club', 'static', 'assets', 'cdn', 'mail', 'smtp', 'ftp', 'root',
+  'support', 'billing', 'status', 'docs', 'help', 'blog', 'courtflow',
+]);
+
 const registerSchema = z.object({
   email:     z.string().trim().toLowerCase().email('A valid email is required'),
   password:  PASSWORD_POLICY,
   firstName: z.string().trim().min(1, 'First name is required').max(80),
   lastName:  z.string().trim().min(1, 'Last name is required').max(80),
   phone:     z.string().trim().max(32).optional(),
+  // Members may join a specific club workspace; defaults to the flagship club
+  clubSlug:  SLUG_POLICY.optional(),
 });
 
 const loginSchema = z.object({
   email:    z.string().trim().toLowerCase().email('A valid email is required'),
   password: z.string().min(1, 'Password is required'),
+  // Disambiguates when the same email exists in several club workspaces
+  clubSlug: SLUG_POLICY.optional(),
 });
 
+const registerClubSchema = z.object({
+  clubName:  z.string().trim().min(3, 'Club name must be at least 3 characters').max(120),
+  clubSlug:  SLUG_POLICY,
+  timezone:  z.string().trim().max(100).default('Africa/Cairo'),
+  email:     z.string().trim().toLowerCase().email('A valid owner email is required'),
+  password:  PASSWORD_POLICY,
+  firstName: z.string().trim().min(1, 'First name is required').max(80),
+  lastName:  z.string().trim().min(1, 'Last name is required').max(80),
+  phone:     z.string().trim().max(32).optional(),
+});
+
+/** Resolve an ACTIVE club by slug or fail with a clean 400. */
+async function resolveClubBySlug(slug: string): Promise<string> {
+  const { rows } = await db.query<{ id: string; is_active: boolean }>(
+    `SELECT id, is_active FROM clubs WHERE slug = $1`,
+    [slug]
+  );
+  if (!rows.length || !rows[0].is_active) {
+    throw new ValidationError('Unknown or inactive club workspace');
+  }
+  return rows[0].id;
+}
+
 // ── POST /api/auth/register ───────────────────────────────────
+// Member self-signup into an existing club workspace (slug optional —
+// defaults to the flagship onboarding club).
 export async function register(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, password, firstName, lastName, phone } = registerSchema.parse(req.body);
+    const { email, password, firstName, lastName, phone, clubSlug } = registerSchema.parse(req.body);
 
-    // Check email uniqueness
+    const targetClubId = clubSlug ? await resolveClubBySlug(clubSlug) : defaultClubId();
+
+    // Check email uniqueness inside this tenant only
     const { rows: existing } = await db.query(
       `SELECT id FROM users WHERE club_id=$1 AND email=$2`,
-      [CLUB_ID, email]
+      [targetClubId, email]
     );
     if (existing.length) {
       throw new ValidationError('An account with this email already exists');
@@ -66,7 +115,7 @@ export async function register(req: Request, res: Response, next: NextFunction):
       await client.query(
         `INSERT INTO users (id,club_id,email,password_hash,role,first_name,last_name,phone,email_verified)
          VALUES ($1,$2,$3,$4,'customer',$5,$6,$7,$8)`,
-        [userId, CLUB_ID, email.toLowerCase(), passwordHash, firstName, lastName, phone ?? null, emailVerified]
+        [userId, targetClubId, email.toLowerCase(), passwordHash, firstName, lastName, phone ?? null, emailVerified]
       );
 
       // Create verification token (24h, stored hashed)
@@ -91,7 +140,7 @@ export async function register(req: Request, res: Response, next: NextFunction):
       }
 
       await auditLog({
-        clubId: CLUB_ID, userId, userRole: 'customer',
+        clubId: targetClubId, userId, userRole: 'customer',
         ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
         actionType: AUDIT_ACTIONS.USER_REGISTERED, entityType: 'user', entityId: userId,
       });
@@ -101,14 +150,111 @@ export async function register(req: Request, res: Response, next: NextFunction):
   } catch (err) { next(err); }
 }
 
+// ── POST /api/auth/register-club ──────────────────────────────
+// Multi-tenant inception: one atomic transaction provisions the tenant row
+// (immutable CLUB_ID), the primary Club Owner account bound to it, and the
+// club's default operating calendar. A transaction-scoped advisory lock on
+// the slug serialises concurrent onboarding races; the UNIQUE constraint on
+// clubs.slug is the final arbiter.
+export async function registerClub(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const {
+      clubName, clubSlug, timezone, email, password, firstName, lastName, phone,
+    } = registerClubSchema.parse(req.body);
+
+    if (RESERVED_SLUGS.has(clubSlug)) {
+      throw new ValidationError('This club slug is reserved — please choose another');
+    }
+
+    const passwordHash  = await hashPassword(password);
+    const clubId        = uuidv4();
+    const ownerId       = uuidv4();
+    const emailVerified = !isProduction;
+
+    try {
+      await withTransaction(async (client) => {
+        // Serialise concurrent registrations of the same slug
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`club-slug:${clubSlug}`]);
+
+        const { rows: slugTaken } = await client.query(`SELECT 1 FROM clubs WHERE slug=$1`, [clubSlug]);
+        if (slugTaken.length) {
+          throw new ValidationError('This club slug is already taken');
+        }
+
+        await client.query(
+          `INSERT INTO clubs (id, name, slug, plan, timezone, currency, is_active)
+           VALUES ($1, $2, $3, 'base', $4, 'EGP', TRUE)`,
+          [clubId, clubName, clubSlug, timezone]
+        );
+
+        await client.query(
+          `INSERT INTO users (id, club_id, email, password_hash, role, first_name, last_name, phone, email_verified)
+           VALUES ($1, $2, $3, $4, 'owner', $5, $6, $7, $8)`,
+          [ownerId, clubId, email, passwordHash, firstName, lastName, phone ?? null, emailVerified]
+        );
+
+        // Sensible default operating window (owner refines it in Settings)
+        await client.query(
+          `INSERT INTO working_hours (club_id, day_of_week, open_time, close_time, is_closed)
+           SELECT $1, d, '08:00', '23:00', FALSE FROM generate_series(0, 6) AS d`,
+          [clubId]
+        );
+
+        // Owner email verification (same contract as member signup)
+        const rawToken  = crypto.randomBytes(32).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await client.query(
+          `INSERT INTO email_verifications (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+          [ownerId, tokenHash, expiresAt.toISOString()]
+        );
+
+        const link = `${process.env.FRONTEND_URL}/verify-email?token=${rawToken}`;
+        if (process.env.NODE_ENV === 'development') {
+          logger.info({ email, link }, 'Owner verification link (dev only)');
+        } else {
+          try {
+            await emailService.sendVerificationEmail({ to: email, firstName, verificationLink: link });
+          } catch (err) {
+            logger.warn({ err, email }, 'Owner verification email failed; club registration continues — token NOT logged');
+          }
+        }
+
+        await auditLog({
+          clubId, userId: ownerId, userRole: 'owner',
+          ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
+          actionType: AUDIT_ACTIONS.CLUB_REGISTERED, entityType: 'club', entityId: clubId,
+          newValues: { clubName, clubSlug, plan: 'base', timezone },
+        });
+      });
+    } catch (err: unknown) {
+      // UNIQUE race fallback — surfaces as a clean 400 rather than a 500
+      if ((err as { code?: string }).code === '23505') {
+        throw new ValidationError('This club slug is already taken');
+      }
+      throw err;
+    }
+
+    logger.info({ clubId, clubSlug }, 'New club tenant provisioned');
+    res.status(201).json({
+      message: 'Club registered successfully. Please verify the owner email, then sign in.',
+      clubId,
+      clubSlug,
+    });
+  } catch (err) { next(err); }
+}
+
 // ── POST /api/auth/verify-email ───────────────────────────────
 export async function verifyEmail(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { token } = req.body;
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    const { rows } = await db.query<{ id: string; user_id: string; expires_at: Date; used_at: Date | null }>(
-      `SELECT id, user_id, expires_at, used_at FROM email_verifications WHERE token_hash=$1`,
+    const { rows } = await db.query<{ id: string; user_id: string; expires_at: Date; used_at: Date | null; club_id: string; role: string }>(
+      `SELECT ev.id, ev.user_id, ev.expires_at, ev.used_at, u.club_id, u.role
+         FROM email_verifications ev
+         JOIN users u ON u.id = ev.user_id
+        WHERE ev.token_hash=$1`,
       [tokenHash]
     );
     if (!rows.length || rows[0].used_at || rows[0].expires_at < new Date()) {
@@ -121,7 +267,7 @@ export async function verifyEmail(req: Request, res: Response, next: NextFunctio
     });
 
     await auditLog({
-      clubId: CLUB_ID, userId: rows[0].user_id, userRole: 'customer',
+      clubId: rows[0].club_id, userId: rows[0].user_id, userRole: rows[0].role,
       actionType: AUDIT_ACTIONS.USER_EMAIL_VERIFIED, entityType: 'user', entityId: rows[0].user_id,
     });
 
@@ -130,30 +276,50 @@ export async function verifyEmail(req: Request, res: Response, next: NextFunctio
 }
 
 // ── POST /api/auth/login ──────────────────────────────────────
+// Multi-tenant resolution: the user's club workspace is looked up from THEIR
+// row (never from an environment constant), the club's own state gates the
+// session, and the issued JWT is bound to that immutable club_id.
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, password } = loginSchema.parse(req.body);
+    const { email, password, clubSlug } = loginSchema.parse(req.body);
 
+    const params: unknown[] = [email];
+    if (clubSlug) params.push(clubSlug);
     const { rows } = await db.query<{
-      id: string; password_hash: string; role: string; first_name: string;
+      id: string; club_id: string; club_slug: string; club_active: boolean;
+      password_hash: string; role: string; first_name: string;
       email_verified: boolean; is_active: boolean; failed_login_attempts: number; locked_until: Date | null;
     }>(
-      `SELECT id,password_hash,role,first_name,email_verified,is_active,failed_login_attempts,locked_until
-       FROM users WHERE club_id=$1 AND email=$2`,
-      [CLUB_ID, email]
+      `SELECT u.id, u.club_id, c.slug AS club_slug, c.is_active AS club_active,
+              u.password_hash, u.role, u.first_name, u.email_verified, u.is_active,
+              u.failed_login_attempts, u.locked_until
+         FROM users u
+         JOIN clubs c ON c.id = u.club_id
+        WHERE u.email=$1 ${clubSlug ? 'AND c.slug=$2' : ''}`,
+      params
     );
 
     // Generic error to prevent user enumeration
     const invalidCreds = new UnauthorizedError('Invalid email or password');
     if (!rows.length) throw invalidCreds;
 
+    // Same email in several club workspaces — require the slug to pick one.
+    // The slugs themselves are never disclosed pre-authentication.
+    if (rows.length > 1) {
+      throw new ValidationError(
+        'This email belongs to multiple club workspaces. Add your club slug to continue.',
+        { code: 'CLUB_SLUG_REQUIRED' }
+      );
+    }
+
     const user = rows[0];
+    if (!user.club_active) throw new UnauthorizedError('This club workspace is suspended');
     if (!user.is_active) throw new UnauthorizedError('Account is deactivated');
     if (isProduction && !user.email_verified) throw new UnauthorizedError('Please verify your email before logging in');
 
     // Lockout check
     if (user.locked_until && user.locked_until > new Date()) {
-      await auditLog({ clubId: CLUB_ID, userId: user.id, userRole: user.role,
+      await auditLog({ clubId: user.club_id, userId: user.id, userRole: user.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGIN_FAILED, entityType: 'user', entityId: user.id,
         reason: 'Account locked' });
       throw new UnauthorizedError(`Account is temporarily locked. Try again after ${user.locked_until.toISOString()}`);
@@ -170,7 +336,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
         `UPDATE users SET failed_login_attempts=$1, locked_until=$2 WHERE id=$3`,
         [attempts, lockedUntil, user.id]
       );
-      await auditLog({ clubId: CLUB_ID, userId: user.id, userRole: user.role,
+      await auditLog({ clubId: user.club_id, userId: user.id, userRole: user.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGIN_FAILED, entityType: 'user', entityId: user.id });
       throw invalidCreds;
     }
@@ -178,7 +344,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
     // Reset failed attempts on success
     await db.query(`UPDATE users SET failed_login_attempts=0, locked_until=NULL WHERE id=$1`, [user.id]);
 
-    const tokenPayload = { sub: user.id, email, role: user.role, clubId: CLUB_ID };
+    const tokenPayload = { sub: user.id, email, role: user.role, clubId: user.club_id };
     const accessToken  = signAccessToken(tokenPayload);
     const { token: refreshToken, jti: refreshJti } = signRefreshToken(tokenPayload);
 
@@ -200,12 +366,15 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       path:     '/api/auth/refresh',
     });
 
-    await auditLog({ clubId: CLUB_ID, userId: user.id, userRole: user.role,
+    await auditLog({ clubId: user.club_id, userId: user.id, userRole: user.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGIN, entityType: 'user', entityId: user.id });
 
     res.json({
       accessToken,
-      user: { id: user.id, email, role: user.role, firstName: user.first_name },
+      user: {
+        id: user.id, email, role: user.role, firstName: user.first_name,
+        clubId: user.club_id, clubSlug: user.club_slug,
+      },
     });
   } catch (err) { next(err); }
 }
@@ -252,7 +421,7 @@ export async function logout(req: Request, res: Response, next: NextFunction): P
 
     res.clearCookie('courtflow_refresh', { path: '/api/auth/refresh' });
 
-    await auditLog({ clubId: CLUB_ID, userId: req.user?.sub, userRole: req.user?.role,
+    await auditLog({ clubId: clubIdOf(req), userId: req.user?.sub, userRole: req.user?.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGOUT, entityType: 'user', entityId: req.user?.sub });
 
     res.json({ message: 'Logged out successfully' });
@@ -268,7 +437,7 @@ export async function listCustomers(
   try {
     const { search } = req.query as Record<string, string>;
 
-    const params: unknown[] = [CLUB_ID];
+    const params: unknown[] = [clubIdOf(req)];
     let searchClause = '';
     if (search) {
       params.push(`%${search.toLowerCase()}%`);
@@ -318,7 +487,7 @@ export async function listStaff(
          FROM users
         WHERE club_id = $1 AND role IN ('owner', 'receptionist')
         ORDER BY (role = 'owner') DESC, first_name, last_name`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     res.json({ data: rows });
@@ -344,7 +513,7 @@ export async function setUserStatus(
           SET is_active = $2, updated_at = NOW()
         WHERE id = $1 AND club_id = $3
         RETURNING id, email, first_name, last_name, role, is_active`,
-      [req.params.id, isActive, CLUB_ID]
+      [req.params.id, isActive, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('User', req.params.id);
 
@@ -359,7 +528,7 @@ export async function setUserStatus(
     }
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_STATUS_CHANGED,
       entityType: 'user', entityId: req.params.id,
       newValues: { isActive, email: rows[0].email, role: rows[0].role },

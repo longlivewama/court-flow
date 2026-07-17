@@ -4,6 +4,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { PoolClient } from 'pg';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../../../infrastructure/cache/redis.client';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
@@ -11,14 +12,13 @@ import { NotFoundError, ValidationError, ConflictError } from '../../../shared/e
 import { addMinutes, startOfDay, endOfDay } from 'date-fns';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 
-const CLUB_ID   = process.env.CLUB_ID!;
 const TIMEZONE  = 'Africa/Cairo';
 
 // ── GET /api/courts ───────────────────────────────────────────
 export async function listCourts(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     // Cache court list for 30 seconds
-    const cacheKey = CACHE_KEYS.courtList(CLUB_ID);
+    const cacheKey = CACHE_KEYS.courtList(clubIdOf(req));
     const cached   = await redis.get(cacheKey);
     if (cached) { res.json(JSON.parse(cached)); return; }
 
@@ -29,7 +29,7 @@ export async function listCourts(req: Request, res: Response, next: NextFunction
               COALESCE(description, '') AS surface_type,
               FALSE AS is_indoor
        FROM courts WHERE club_id=$1 AND is_active=true ORDER BY number`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     await redis.setex(cacheKey, CACHE_TTL.courtList, JSON.stringify(rows));
@@ -41,7 +41,7 @@ export async function listCourts(req: Request, res: Response, next: NextFunction
 // ── GET /api/courts/:id ───────────────────────────────────────
 export async function getCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { rows } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, CLUB_ID]);
+    const { rows } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, clubIdOf(req)]);
     if (!rows.length) throw new NotFoundError('Court', req.params.id);
     res.json(rows[0]);
   } catch (err) { next(err); }
@@ -65,7 +65,7 @@ export async function createCourt(req: Request, res: Response, next: NextFunctio
     if (number === undefined || number === null) {
       const { rows: maxRows } = await db.query<{ max_number: number | null }>(
         `SELECT COALESCE(MAX(number), 0) AS max_number FROM courts WHERE club_id = $1`,
-        [CLUB_ID]
+        [clubIdOf(req)]
       );
       number = (maxRows[0]?.max_number ?? 0) + 1;
     }
@@ -73,10 +73,10 @@ export async function createCourt(req: Request, res: Response, next: NextFunctio
     const { rows } = await db.query(
       `INSERT INTO courts (club_id, name, number, description, price_per_slot, status)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [CLUB_ID, name.trim(), number, description?.trim() ?? null, Number(pricePerSlot), status ?? 'available']
+      [clubIdOf(req), name.trim(), number, description?.trim() ?? null, Number(pricePerSlot), status ?? 'available']
     );
-    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.COURT_CREATED,
       entityType: 'court', entityId: rows[0].id, newValues: rows[0] });
     res.status(201).json(rows[0]);
@@ -87,7 +87,7 @@ export async function createCourt(req: Request, res: Response, next: NextFunctio
 export async function updateCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { name, number, description, pricePerSlot, status } = req.body;
-    const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, CLUB_ID]);
+    const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, clubIdOf(req)]);
     if (!old.length) throw new NotFoundError('Court', req.params.id);
 
     const { rows } = await db.query(
@@ -95,10 +95,10 @@ export async function updateCourt(req: Request, res: Response, next: NextFunctio
        description=COALESCE($4,description), price_per_slot=COALESCE($5,price_per_slot),
        status=COALESCE($6,status), updated_at=NOW()
        WHERE id=$1 AND club_id=$7 RETURNING *`,
-      [req.params.id, name, number, description, pricePerSlot, status, CLUB_ID]
+      [req.params.id, name, number, description, pricePerSlot, status, clubIdOf(req)]
     );
-    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.COURT_UPDATED, entityType: 'court', entityId: req.params.id,
       previousValues: old[0], newValues: rows[0] });
     res.json(rows[0]);
@@ -110,11 +110,11 @@ export async function deleteCourt(req: Request, res: Response, next: NextFunctio
   try {
     const { rows } = await db.query(
       `UPDATE courts SET is_active=false, updated_at=NOW() WHERE id=$1 AND club_id=$2 RETURNING *`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Court', req.params.id);
-    await redis.del(CACHE_KEYS.courtList(CLUB_ID));
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.COURT_DELETED, entityType: 'court', entityId: req.params.id });
     res.json({ message: 'Court deactivated' });
   } catch (err) { next(err); }
@@ -135,7 +135,7 @@ export async function getCourtAvailability(req: Request, res: Response, next: Ne
     const dayOfWeek = cairoDay.getDay();
     const { rows: wh } = await db.query(
       `SELECT * FROM working_hours WHERE club_id=$1 AND day_of_week=$2`,
-      [CLUB_ID, dayOfWeek]
+      [clubIdOf(req), dayOfWeek]
     );
 
     // Get existing confirmed bookings for this court on this day
@@ -145,7 +145,7 @@ export async function getCourtAvailability(req: Request, res: Response, next: Ne
          AND status IN ('confirmed','checked_in','pending_verification','pending_deposit')
          AND start_time >= $3 AND start_time <= $4
        ORDER BY start_time`,
-      [req.params.id, CLUB_ID, dayStartCairo.toISOString(), dayEndCairo.toISOString()]
+      [req.params.id, clubIdOf(req), dayStartCairo.toISOString(), dayEndCairo.toISOString()]
     );
 
     // Get blocked periods
@@ -153,7 +153,7 @@ export async function getCourtAvailability(req: Request, res: Response, next: Ne
       `SELECT start_at, end_at, title, type FROM blocked_periods
        WHERE club_id=$1 AND (court_id=$2 OR court_id IS NULL)
          AND start_at <= $4 AND end_at >= $3`,
-      [CLUB_ID, req.params.id, dayStartCairo.toISOString(), dayEndCairo.toISOString()]
+      [clubIdOf(req), req.params.id, dayStartCairo.toISOString(), dayEndCairo.toISOString()]
     );
 
     res.json({ workingHours: wh[0] ?? null, bookedSlots: existing, blockedPeriods: blocked });
@@ -181,7 +181,7 @@ export async function getAvailabilityGrid(req: Request, res: Response, next: Nex
       db.query(
         `SELECT id, name, number AS court_number, price_per_slot AS price_per_hour
          FROM courts WHERE club_id = $1 AND is_active = true ORDER BY number`,
-        [CLUB_ID]
+        [clubIdOf(req)]
       ),
       db.query(
         `SELECT court_id, start_time, end_time
@@ -190,14 +190,14 @@ export async function getAvailabilityGrid(req: Request, res: Response, next: Nex
            AND status IN ('confirmed','checked_in','pending_verification','pending_deposit','draft')
            AND start_time < $3 AND end_time > $2
          ORDER BY start_time`,
-        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+        [clubIdOf(req), windowStart.toISOString(), windowEnd.toISOString()]
       ),
       db.query(
         `SELECT court_id, type, title, start_at, end_at
          FROM blocked_periods
          WHERE club_id = $1 AND start_at < $3 AND end_at > $2
          ORDER BY start_at`,
-        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+        [clubIdOf(req), windowStart.toISOString(), windowEnd.toISOString()]
       ),
     ]);
 
@@ -253,7 +253,7 @@ export async function getDailySchedule(req: Request, res: Response, next: NextFu
            AND b.start_time <  $3
            AND b.status NOT IN ('cancelled','expired')
          ORDER BY b.start_time, c.number`,
-        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+        [clubIdOf(req), windowStart.toISOString(), windowEnd.toISOString()]
       ),
       db.query(
         `SELECT bp.id, bp.court_id, bp.type AS reason_type, bp.title,
@@ -263,7 +263,7 @@ export async function getDailySchedule(req: Request, res: Response, next: NextFu
            AND bp.start_at <  $3
            AND bp.end_at   >  $2
          ORDER BY bp.start_at`,
-        [CLUB_ID, windowStart.toISOString(), windowEnd.toISOString()]
+        [clubIdOf(req), windowStart.toISOString(), windowEnd.toISOString()]
       ),
     ]);
 
@@ -283,7 +283,7 @@ export async function getDailySchedule(req: Request, res: Response, next: NextFu
 // ── GET/PUT working hours ──────────────────────────────────────
 export async function getWorkingHours(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { rows } = await db.query(`SELECT * FROM working_hours WHERE club_id=$1 ORDER BY day_of_week`, [CLUB_ID]);
+    const { rows } = await db.query(`SELECT * FROM working_hours WHERE club_id=$1 ORDER BY day_of_week`, [clubIdOf(req)]);
     res.json(rows);
   } catch (err) { next(err); }
 }
@@ -301,12 +301,12 @@ export async function upsertWorkingHours(req: Request, res: Response, next: Next
            VALUES ($1,$2,$3,$4,$5)
            ON CONFLICT (club_id,day_of_week) DO UPDATE
              SET open_time=$3, close_time=$4, is_closed=$5, updated_at=NOW()`,
-          [CLUB_ID, h.dayOfWeek, h.openTime, h.closeTime, h.isClosed]
+          [clubIdOf(req), h.dayOfWeek, h.openTime, h.closeTime, h.isClosed]
         );
       }
     });
-    await redis.del(CACHE_KEYS.workingHours(CLUB_ID));
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.workingHours(clubIdOf(req)));
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.WORKING_HOURS_UPDATED, entityType: 'working_hours' });
     res.json({ message: 'Working hours updated' });
   } catch (err) { next(err); }
@@ -315,7 +315,7 @@ export async function upsertWorkingHours(req: Request, res: Response, next: Next
 // ── Club settings ─────────────────────────────────────────────
 export async function getClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { rows } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [CLUB_ID]);
+    const { rows } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubIdOf(req)]);
     res.json(rows[0]);
   } catch (err) { next(err); }
 }
@@ -338,7 +338,7 @@ export async function updateClubSettings(req: Request, res: Response, next: Next
     const phone                      = body.phone                      ?? body.contact_phone;
     const address                    = body.address;
 
-    const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [CLUB_ID]);
+    const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubIdOf(req)]);
     const { rows } = await db.query(
       `UPDATE clubs SET
          deposit_percent=COALESCE($2,deposit_percent),
@@ -351,11 +351,11 @@ export async function updateClubSettings(req: Request, res: Response, next: Next
          phone=COALESCE($10,phone), address=COALESCE($11,address),
          updated_at=NOW()
        WHERE id=$1 RETURNING *`,
-      [CLUB_ID, depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
+      [clubIdOf(req), depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
        reminder24hEnabled, reminder2hEnabled, name, email, phone, address]
     );
-    await redis.del(CACHE_KEYS.clubSettings(CLUB_ID));
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.clubSettings(clubIdOf(req)));
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.SETTINGS_UPDATED, entityType: 'club',
       previousValues: old[0], newValues: rows[0] });
     res.json(rows[0]);
@@ -491,19 +491,19 @@ export async function createBlockedPeriod(req: Request, res: Response, next: Nex
         `SELECT id FROM courts
           WHERE club_id = $1::uuid AND ($2::uuid IS NULL OR id = $2::uuid)
           FOR UPDATE`,
-        [CLUB_ID, courtId],
+        [clubIdOf(req), courtId],
       );
 
-      await assertBlockedPeriodFree(client, CLUB_ID, courtId, startAt, endAt);
+      await assertBlockedPeriodFree(client, clubIdOf(req), courtId, startAt, endAt);
 
       const { rows } = await client.query(
         `INSERT INTO blocked_periods (club_id, court_id, type, title, start_at, end_at, recurring, created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [CLUB_ID, courtId, DB_REASON_MAP[reasonType], body.title, body.startAt, body.endAt, body.recurring ?? false, req.user!.sub]
+        [clubIdOf(req), courtId, DB_REASON_MAP[reasonType], body.title, body.startAt, body.endAt, body.recurring ?? false, req.user!.sub]
       );
 
       await auditLog({
-        clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+        clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
         actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_CREATED,
         entityType: 'blocked_period', entityId: rows[0].id, newValues: rows[0]
       });
@@ -524,10 +524,10 @@ export async function deleteBlockedPeriod(req: Request, res: Response, next: Nex
   try {
     const { rows } = await db.query(
       `DELETE FROM blocked_periods WHERE id=$1 AND club_id=$2 RETURNING *`,
-      [req.params.bpId, CLUB_ID]
+      [req.params.bpId, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Blocked period', req.params.bpId);
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.BLOCKED_PERIOD_DELETED, entityType: 'blocked_period', entityId: req.params.bpId });
     res.json({ message: 'Blocked period removed' });
   } catch (err) { next(err); }

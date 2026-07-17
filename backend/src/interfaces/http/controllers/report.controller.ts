@@ -4,11 +4,11 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { ValidationError, NotFoundError } from '../../../shared/errors';
 import { v4 as uuidv4 } from 'uuid';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 type ReportType = 'daily_revenue' | 'weekly_revenue' | 'monthly_revenue' | 'court_utilization'
   | 'booking_history' | 'customer_activity' | 'payment_history' | 'cancellation_report' | 'noshow_report';
@@ -33,16 +33,16 @@ export async function generateReport(req: Request, res: Response, next: NextFunc
     const { rows } = await db.query(
       `INSERT INTO report_jobs (club_id, requested_by, type, format, filters, status)
        VALUES ($1,$2,$3,$4,$5,'queued') RETURNING id`,
-      [CLUB_ID, req.user!.sub, type, format, JSON.stringify(filters ?? {})]
+      [clubIdOf(req), req.user!.sub, type, format, JSON.stringify(filters ?? {})]
     );
     const jobId = rows[0].id;
 
-    await auditLog({ clubId: CLUB_ID, userId: req.user!.sub, userRole: 'owner',
+    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.REPORT_GENERATED, entityType: 'report_job', entityId: jobId,
       newValues: { type, format, filters } });
 
     // For small reports, process synchronously
-    const data = await fetchReportData(type, filters);
+    const data = await fetchReportData(clubIdOf(req), type, filters);
 
     let content: Buffer;
     let contentType: string;
@@ -78,7 +78,7 @@ export async function listReports(req: Request, res: Response, next: NextFunctio
   try {
     const { rows } = await db.query(
       `SELECT * FROM report_jobs WHERE club_id=$1 ORDER BY created_at DESC LIMIT 50`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
     res.json(rows);
   } catch (err) { next(err); }
@@ -89,7 +89,7 @@ export async function downloadReport(req: Request, res: Response, next: NextFunc
   try {
     const { rows } = await db.query(
       `SELECT * FROM report_jobs WHERE id=$1 AND club_id=$2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Report', req.params.id);
     if (rows[0].status !== 'completed') throw new ValidationError('Report is not yet ready');
@@ -98,7 +98,7 @@ export async function downloadReport(req: Request, res: Response, next: NextFunc
 }
 
 // ── Report data fetchers ──────────────────────────────────────
-async function fetchReportData(type: ReportType, filters: Record<string, string>): Promise<unknown[]> {
+async function fetchReportData(clubId: string, type: ReportType, filters: Record<string, string>): Promise<unknown[]> {
   const from = filters.from ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const to   = filters.to   ?? new Date().toISOString();
 
@@ -111,7 +111,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             WHERE b.club_id=$1 AND b.status IN ('confirmed','checked_in','completed')
               AND b.start_time BETWEEN $2 AND $3
             GROUP BY 1 ORDER BY 1`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     weekly_revenue: {
       sql: `SELECT DATE_TRUNC('week', b.start_time AT TIME ZONE 'Africa/Cairo') AS week,
@@ -120,7 +120,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             WHERE b.club_id=$1 AND b.status IN ('confirmed','checked_in','completed')
               AND b.start_time BETWEEN $2 AND $3
             GROUP BY 1 ORDER BY 1`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     monthly_revenue: {
       sql: `SELECT TO_CHAR(b.start_time AT TIME ZONE 'Africa/Cairo','MM/YYYY') AS month,
@@ -129,7 +129,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             WHERE b.club_id=$1 AND b.status IN ('confirmed','checked_in','completed')
               AND b.start_time BETWEEN $2 AND $3
             GROUP BY 1 ORDER BY 1`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     court_utilization: {
       sql: `SELECT c.name, c.number,
@@ -140,7 +140,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
               AND b.start_time BETWEEN $2 AND $3
             WHERE c.club_id=$1
             GROUP BY c.id, c.name, c.number ORDER BY c.number`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     booking_history: {
       sql: `SELECT b.id, b.status, b.start_time, b.end_time, b.duration_minutes, b.total_price,
@@ -150,7 +150,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             LEFT JOIN payments p ON p.booking_id=b.id
             WHERE b.club_id=$1 AND b.start_time BETWEEN $2 AND $3
             ORDER BY b.start_time DESC`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     customer_activity: {
       sql: `SELECT u.id, u.email, u.first_name, u.last_name,
@@ -161,7 +161,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             FROM users u LEFT JOIN bookings b ON b.customer_id=u.id AND b.start_time BETWEEN $2 AND $3
             WHERE u.club_id=$1 AND u.role='customer'
             GROUP BY u.id ORDER BY total_bookings DESC`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     payment_history: {
       sql: `SELECT p.id, p.status, p.deposit_amount, p.total_amount, p.verified_at,
@@ -170,7 +170,7 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             JOIN courts c ON c.id=b.court_id JOIN users u ON u.id=p.customer_id
             WHERE p.club_id=$1 AND b.start_time BETWEEN $2 AND $3
             ORDER BY p.created_at DESC`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     cancellation_report: {
       sql: `SELECT b.id, b.cancellation_reason, b.cancelled_at, b.start_time,
@@ -178,14 +178,14 @@ async function fetchReportData(type: ReportType, filters: Record<string, string>
             FROM bookings b JOIN courts c ON c.id=b.court_id JOIN users u ON u.id=b.customer_id
             WHERE b.club_id=$1 AND b.status='cancelled' AND b.cancelled_at BETWEEN $2 AND $3
             ORDER BY b.cancelled_at DESC`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
     noshow_report: {
       sql: `SELECT b.id, b.start_time, b.noshow_at, c.name AS court, u.first_name, u.last_name
             FROM bookings b JOIN courts c ON c.id=b.court_id JOIN users u ON u.id=b.customer_id
             WHERE b.club_id=$1 AND b.status='no_show' AND b.noshow_at BETWEEN $2 AND $3
             ORDER BY b.noshow_at DESC`,
-      params: [CLUB_ID, from, to],
+      params: [clubId, from, to],
     },
   };
 

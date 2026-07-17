@@ -7,8 +7,11 @@ import { persist } from 'zustand/middleware';
 export interface AuthUser {
   id:        string;
   email:     string;
-  role:      'owner' | 'receptionist' | 'customer';
+  role:      'owner' | 'receptionist' | 'coach' | 'customer';
   firstName: string;
+  /** Multi-tenant scope: the immutable club workspace this session belongs to */
+  clubId?:   string;
+  clubSlug?: string;
 }
 
 interface AuthState {

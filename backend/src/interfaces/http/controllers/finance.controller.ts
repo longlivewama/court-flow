@@ -17,8 +17,8 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 
-const CLUB_ID = process.env.CLUB_ID!;
 const TZ = 'Africa/Cairo';
 
 const VERIFIED = `('confirmed','checked_in','completed','no_show')`;
@@ -45,7 +45,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
        WHERE b.club_id = $1 AND b.deleted_at IS NULL
          AND b.status IN ${VERIFIED}
          AND b.start_time >= NOW() - ($2 || ' days')::interval * 2`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // Equipment rental income inside those bookings, split per category
@@ -60,7 +60,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
          AND b.status IN ${VERIFIED}
          AND b.start_time >= NOW() - ($2 || ' days')::interval * 2
        GROUP BY e.category`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // ── Revenue: tournament registration fees ─────────────────────
@@ -72,7 +72,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
        FROM tournament_teams tt
        JOIN tournaments t ON t.id = tt.tournament_id
        WHERE t.club_id = $1 AND t.status <> 'cancelled'`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // ── Revenue: training sessions ─────────────────────────────────
@@ -85,7 +85,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
          COUNT(*)  FILTER (WHERE NOT ts.is_paid AND ts.status <> 'cancelled')::int AS unpaid_sessions
        FROM training_sessions ts
        WHERE ts.club_id = $1`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // ── Costs: operating expenses ──────────────────────────────────
@@ -94,7 +94,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
        FROM expenses
        WHERE club_id = $1 AND expense_date >= CURRENT_DATE - ($2 || ' days')::interval
        GROUP BY category ORDER BY total DESC`,
-      [CLUB_ID, rangeDays]
+      [clubIdOf(req), rangeDays]
     );
 
     // ── Monthly P&L series (last 6 calendar months) ────────────────
@@ -117,7 +117,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
            AND ts.paid_at >= DATE_TRUNC('month', NOW()) - INTERVAL '5 months'
        ) AS streams
        GROUP BY month`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     const { rows: monthlyCosts } = await db.query(
@@ -133,7 +133,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
            AND ts.paid_at >= DATE_TRUNC('month', NOW()) - INTERVAL '5 months'
        ) AS outflows
        GROUP BY month`,
-      [CLUB_ID]
+      [clubIdOf(req)]
     );
 
     const monthKeys: string[] = [];

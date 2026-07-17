@@ -13,10 +13,10 @@ import { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
+import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
 
-const CLUB_ID = process.env.CLUB_ID!;
 
 const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 
@@ -61,7 +61,7 @@ export async function listItems(req: Request, res: Response, next: NextFunction)
        LEFT JOIN courts c ON c.id = i.court_id
        WHERE i.club_id = $1 ${includeReturned ? '' : `AND i.status <> 'returned'`}
        ORDER BY i.found_at DESC`,
-      [CLUB_ID, req.user!.sub]
+      [clubIdOf(req), req.user!.sub]
     );
 
     res.json({
@@ -75,7 +75,7 @@ export async function getItemPhoto(req: Request, res: Response, next: NextFuncti
   try {
     const { rows } = await db.query<{ photo_data: Buffer | null; photo_mime: string | null }>(
       `SELECT photo_data, photo_mime FROM lost_found_items WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!rows.length || !rows[0].photo_data) throw new NotFoundError('Photo for item', req.params.id);
 
@@ -114,12 +114,12 @@ export async function createItem(req: Request, res: Response, next: NextFunction
        VALUES ($1,$2,$3,$4,COALESCE($5, NOW()),$6,$7,$8)
        RETURNING id, title, description, court_id, found_at, status, created_at,
                  (photo_data IS NOT NULL) AS has_photo`,
-      [CLUB_ID, parsed.title, parsed.description ?? null, parsed.courtId ?? null,
+      [clubIdOf(req), parsed.title, parsed.description ?? null, parsed.courtId ?? null,
        parsed.foundAt ?? null, req.file?.buffer ?? null, req.file?.mimetype ?? null, req.user!.sub]
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.LOST_ITEM_LOGGED,
       entityType: 'lost_found_item', entityId: rows[0].id,
       newValues: { title: parsed.title, courtId: parsed.courtId, hasPhoto: !!req.file },
@@ -150,12 +150,12 @@ export async function updateItem(req: Request, res: Response, next: NextFunction
        RETURNING id, title, description, found_at, status,
                  (photo_data IS NOT NULL) AS has_photo`,
       [req.params.id, parsed.status ?? null, parsed.title ?? null,
-       parsed.description ?? null, CLUB_ID]
+       parsed.description ?? null, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Lost & Found item', req.params.id);
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.LOST_ITEM_UPDATED,
       entityType: 'lost_found_item', entityId: req.params.id,
       newValues: { ...parsed },
@@ -176,7 +176,7 @@ export async function submitClaim(req: Request, res: Response, next: NextFunctio
 
     const { rows: itemRows } = await db.query(
       `SELECT id, status FROM lost_found_items WHERE id = $1 AND club_id = $2`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
     if (!itemRows.length) throw new NotFoundError('Lost & Found item', req.params.id);
     if (itemRows[0].status === 'returned') {
@@ -196,7 +196,7 @@ export async function submitClaim(req: Request, res: Response, next: NextFunctio
     );
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.LOST_ITEM_CLAIM_SUBMITTED,
       entityType: 'lost_found_claim', entityId: rows[0].id,
       newValues: { itemId: req.params.id },
@@ -218,7 +218,7 @@ export async function listClaims(req: Request, res: Response, next: NextFunction
        JOIN users u ON u.id = lc.claimant_id
        WHERE lc.item_id = $1 AND i.club_id = $2
        ORDER BY lc.created_at`,
-      [req.params.id, CLUB_ID]
+      [req.params.id, clubIdOf(req)]
     );
 
     res.json({ data: rows });
@@ -243,7 +243,7 @@ export async function decideClaim(req: Request, res: Response, next: NextFunctio
        WHERE lc.id = $2 AND lc.item_id = $1 AND i.id = lc.item_id AND i.club_id = $5
          AND lc.status = 'pending'
        RETURNING lc.*`,
-      [req.params.id, req.params.claimId, parsed.status, req.user!.sub, CLUB_ID]
+      [req.params.id, req.params.claimId, parsed.status, req.user!.sub, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Pending claim', req.params.claimId);
 
@@ -261,7 +261,7 @@ export async function decideClaim(req: Request, res: Response, next: NextFunctio
     }
 
     await auditLog({
-      clubId: CLUB_ID, userId: req.user!.sub, userRole: req.user!.role,
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.LOST_ITEM_CLAIM_DECIDED,
       entityType: 'lost_found_claim', entityId: req.params.claimId,
       newValues: { status: parsed.status, itemId: req.params.id },
