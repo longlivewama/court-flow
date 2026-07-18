@@ -25,6 +25,8 @@ interface CoachRow {
   session_count: number;
   earned: number;
   club_profit: number;
+  user_id: string | null;
+  login_email: string | null;
 }
 
 interface SessionRow {
@@ -69,7 +71,9 @@ export default function CoachingPage() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
 
   const [coachFormOpen, setCoachFormOpen] = useState(false);
-  const [coachDraft, setCoachDraft] = useState({ name: '', specialty: '', hourlyRate: '', commissionPct: '60' });
+  const [coachDraft, setCoachDraft] = useState({ name: '', specialty: '', hourlyRate: '', commissionPct: '60', userEmail: '' });
+  // Inline link-login editor for a roster row (owner only)
+  const [linkDraft, setLinkDraft] = useState<{ id: string; email: string } | null>(null);
   const [savingCoach, setSavingCoach] = useState(false);
 
   const [sessionFormOpen, setSessionFormOpen] = useState(false);
@@ -120,8 +124,9 @@ export default function CoachingPage() {
         specialty:     coachDraft.specialty.trim() || null,
         hourlyRate:    Number(coachDraft.hourlyRate),
         commissionPct: Number(coachDraft.commissionPct) || 60,
+        userEmail:     coachDraft.userEmail.trim().toLowerCase() || undefined,
       });
-      setCoachDraft({ name: '', specialty: '', hourlyRate: '', commissionPct: '60' });
+      setCoachDraft({ name: '', specialty: '', hourlyRate: '', commissionPct: '60', userEmail: '' });
       setCoachFormOpen(false);
       setNotice('Coach added to the roster.');
       loadCoaches();
@@ -295,6 +300,12 @@ export default function CoachingPage() {
             <input className="input" type="number" min={0} max={100} value={coachDraft.commissionPct}
               onChange={(e) => setCoachDraft((d) => ({ ...d, commissionPct: e.target.value }))} />
           </div>
+          <div>
+            <label className="input-label">Login email (optional)</label>
+            <input className="input" type="email" placeholder="coach@club.com"
+              value={coachDraft.userEmail}
+              onChange={(e) => setCoachDraft((d) => ({ ...d, userEmail: e.target.value }))} />
+          </div>
           <button className="btn btn-primary" onClick={addCoach} disabled={savingCoach}>
             <Check size={14} />
             {savingCoach ? 'Adding…' : 'Add coach'}
@@ -377,17 +388,18 @@ export default function CoachingPage() {
               <th style={{ width: 90, textAlign: 'right' }}>Sessions</th>
               <th style={{ width: 130, textAlign: 'right' }}>Earned</th>
               <th style={{ width: 130, textAlign: 'right' }}>Club profit</th>
+              <th style={{ width: 210 }}>Login</th>
               {isOwner && <th style={{ width: 110 }}>Active</th>}
             </tr>
           </thead>
           <tbody>
             {coachesLoading ? (
               [0, 1].map((i) => (
-                <tr key={i}><td colSpan={isOwner ? 7 : 6}><div className="skeleton" style={{ height: 22 }} /></td></tr>
+                <tr key={i}><td colSpan={isOwner ? 8 : 7}><div className="skeleton" style={{ height: 22 }} /></td></tr>
               ))
             ) : coaches.length === 0 ? (
               <tr>
-                <td colSpan={isOwner ? 7 : 6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
+                <td colSpan={isOwner ? 8 : 7} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
                   No coaches yet{isOwner ? ' — add your first coach above.' : '.'}
                 </td>
               </tr>
@@ -402,6 +414,48 @@ export default function CoachingPage() {
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{c.session_count}</td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{egp(c.earned)}</td>
                 <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--accent-green-text)' }}>{egp(c.club_profit)}</td>
+                <td>
+                  {linkDraft?.id === c.id ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input
+                        className="input" type="email" placeholder="coach@club.com" autoFocus
+                        value={linkDraft.email}
+                        onChange={(e) => setLinkDraft({ id: c.id, email: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === 'Escape') setLinkDraft(null); }}
+                        style={{ height: 30, fontSize: 12, minWidth: 0 }}
+                      />
+                      <button className="btn btn-primary btn-sm" style={{ height: 30 }}
+                        onClick={async () => {
+                          const email = linkDraft.email.trim().toLowerCase();
+                          if (!email) return;
+                          await patchCoach(c.id, { userEmail: email }, `${c.name} linked to ${email}.`);
+                          setLinkDraft(null);
+                        }}>
+                        Link
+                      </button>
+                      <button className="btn btn-ghost btn-sm" style={{ height: 30 }} onClick={() => setLinkDraft(null)}>
+                        ✕
+                      </button>
+                    </div>
+                  ) : c.login_email ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span className="truncate" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{c.login_email}</span>
+                      {isOwner && (
+                        <button className="btn btn-ghost btn-sm" style={{ height: 26, padding: '0 8px', fontSize: 11 }}
+                          onClick={() => patchCoach(c.id, { userEmail: null }, `${c.name}'s login unlinked.`)}>
+                          Unlink
+                        </button>
+                      )}
+                    </div>
+                  ) : isOwner ? (
+                    <button className="btn btn-secondary btn-sm" style={{ height: 26, padding: '0 10px', fontSize: 11 }}
+                      onClick={() => setLinkDraft({ id: c.id, email: '' })}>
+                      Link login
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--text-disabled)' }}>—</span>
+                  )}
+                </td>
                 {isOwner && (
                   <td>
                     <Toggle
