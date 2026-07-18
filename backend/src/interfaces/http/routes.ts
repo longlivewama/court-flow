@@ -4,7 +4,7 @@
  */
 import { Express, Router } from 'express';
 import { authenticate, requireRole, loginLimiter, registerLimiter, passwordLimiter, uploadLimiter } from './middleware/auth.middleware';
-import { requireTenant, requireClubResource } from './middleware/tenant.middleware';
+import { requireTenant, requireClubResource, requirePermission } from './middleware/tenant.middleware';
 
 // Controllers
 import * as authCtrl    from './controllers/auth.controller';
@@ -45,7 +45,10 @@ export function registerRoutes(app: Express): void {
   users.get('/', requireRole('receptionist', 'owner'), authCtrl.listCustomers);
   // /staff must be declared BEFORE any /:id route pattern
   users.get('/staff',            requireRole('owner'), authCtrl.listStaff);
-  users.patch('/:id/status',     requireRole('owner'), requireClubResource('users'), authCtrl.setUserStatus);
+  users.post('/staff',           requireRole('owner'), authCtrl.createStaff);
+  users.patch('/:id/status',      requireRole('owner'), requireClubResource('users'), authCtrl.setUserStatus);
+  users.patch('/:id/permissions', requireRole('owner'), requireClubResource('users'), authCtrl.updateStaffPermissions);
+  users.delete('/:id',            requireRole('owner'), requireClubResource('users'), authCtrl.deleteStaff);
   app.use('/api/users', users);
 
   // ── Equipment rental catalogue ────────────────────────────────
@@ -74,7 +77,7 @@ export function registerRoutes(app: Express): void {
   // ── Payments ledger ───────────────────────────────────────────
   const payments = Router();
   payments.use(authenticate, requireTenant, requireRole('receptionist', 'owner'));
-  payments.get('/', paymentCtrl.listPayments);
+  payments.get('/', requirePermission('can_view_finance'), paymentCtrl.listPayments);
   app.use('/api/payments', payments);
 
   // ── Waitlist (anti-scalping) ──────────────────────────────────
@@ -121,13 +124,13 @@ export function registerRoutes(app: Express): void {
   // Coaches deliberately do NOT get /coaches or /sessions — those expose the
   // club-wide ledger (club_share, other coaches' payouts).
   coaching.get('/me',             requireRole('coach', 'owner'), coachingCtrl.getMyCoachingView);
-  coaching.get('/coaches',        requireRole('receptionist', 'owner'), coachingCtrl.listCoaches);
+  coaching.get('/coaches',        requireRole('receptionist', 'owner'), requirePermission('can_manage_coaches'), coachingCtrl.listCoaches);
   coaching.post('/coaches',       requireRole('owner'), coachingCtrl.createCoach);
   coaching.patch('/coaches/:id',  requireRole('owner'), requireClubResource('coaches'), coachingCtrl.updateCoach);
-  coaching.get('/sessions',       requireRole('receptionist', 'owner'), coachingCtrl.listSessions);
-  coaching.post('/sessions',      requireRole('receptionist', 'owner'), coachingCtrl.createSession);
-  coaching.patch('/sessions/:id', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), coachingCtrl.updateSession);
-  coaching.post('/sessions/:id/pay', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), coachingCtrl.markSessionPaid);
+  coaching.get('/sessions',       requireRole('receptionist', 'owner'), requirePermission('can_manage_coaches'), coachingCtrl.listSessions);
+  coaching.post('/sessions',      requireRole('receptionist', 'owner'), requirePermission('can_manage_coaches'), coachingCtrl.createSession);
+  coaching.patch('/sessions/:id', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), requirePermission('can_manage_coaches'), coachingCtrl.updateSession);
+  coaching.post('/sessions/:id/pay', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), requirePermission('can_manage_coaches'), coachingCtrl.markSessionPaid);
   app.use('/api/coaching', coaching);
 
   // ── Lost & Found board ────────────────────────────────────────
@@ -149,7 +152,7 @@ export function registerRoutes(app: Express): void {
   // /me must be declared BEFORE /:id so it isn't matched as a booking id
   bookings.get('/me',               requireRole('customer', 'receptionist', 'owner', 'admin'), bookingCtrl.listBookings);
   // financial-summary must also be declared BEFORE /:id
-  bookings.get('/financial-summary',  requireRole('receptionist', 'owner'), bookingCtrl.getFinancialSummary);
+  bookings.get('/financial-summary',  requireRole('receptionist', 'owner'), requirePermission('can_view_finance'), bookingCtrl.getFinancialSummary);
   // analytics-plots must also be declared BEFORE /:id
   bookings.get('/analytics-plots',    requireRole('owner'), bookingCtrl.getAnalyticsPlots);
   bookings.post('/',                requireRole('customer', 'receptionist', 'owner', 'admin'), bookingCtrl.createBookingHandler);
@@ -163,7 +166,7 @@ export function registerRoutes(app: Express): void {
   );
   // View the uploaded receipt (staff verify any; customers only their own — enforced in handler)
   bookings.get('/:id/receipt', requireClubResource('bookings'), bookingCtrl.getReceiptHandler);
-  bookings.patch('/:id/verify',   requireRole('receptionist', 'owner'), requireClubResource('bookings'), bookingCtrl.verifyDepositHandler);
+  bookings.patch('/:id/verify',   requireRole('receptionist', 'owner'), requireClubResource('bookings'), requirePermission('can_verify_deposits'), bookingCtrl.verifyDepositHandler);
   bookings.patch('/:id/checkin',  requireRole('receptionist', 'owner'), requireClubResource('bookings'), bookingCtrl.checkinHandler);
   bookings.patch('/:id/cancel',   requireClubResource('bookings'), bookingCtrl.cancelBookingHandler);
   bookings.patch('/:id/settle',   requireRole('receptionist', 'owner'), requireClubResource('bookings'), bookingCtrl.settlePaymentHandler);
@@ -226,6 +229,6 @@ export function registerRoutes(app: Express): void {
   dashboard.get('/today',   requireRole('owner', 'receptionist'), bookingCtrl.listBookings);
   // Staff-only: exposes every customer's name/phone/email + admin_notes for the
   // day. Must NOT be reachable by a customer token (BOLA / PII disclosure).
-  dashboard.get('/schedule', requireRole('owner', 'receptionist'), courtCtrl.getDailySchedule);
+  dashboard.get('/schedule', requireRole('owner', 'receptionist'), requirePermission('can_view_schedule'), courtCtrl.getDailySchedule);
   app.use('/api/dashboard', dashboard);
 }

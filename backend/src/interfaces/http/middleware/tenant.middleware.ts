@@ -117,6 +117,46 @@ export type GuardedTable = keyof typeof GUARDED_TABLES;
  * session's club_id. A cross-tenant id responds 404 — indistinguishable from
  * a nonexistent id, so tenants cannot enumerate each other's resources.
  */
+// ── Granular staff permissions ───────────────────────────────
+// Column allowlist — the flag is interpolated into SQL, so it must only ever
+// come from this set (never from request input).
+export const STAFF_PERMISSIONS = [
+  'can_view_schedule',
+  'can_verify_deposits',
+  'can_manage_coaches',
+  'can_view_finance',
+] as const;
+export type StaffPermission = (typeof STAFF_PERMISSIONS)[number];
+
+/**
+ * Factory: require a granular staff permission on top of role/tenant checks.
+ * Owners implicitly hold every permission and short-circuit. Everyone else is
+ * checked against their live users row (fresh, so an owner's toggle takes
+ * effect immediately rather than at the next 15-minute token refresh).
+ */
+export function requirePermission(flag: StaffPermission) {
+  if (!STAFF_PERMISSIONS.includes(flag)) {
+    throw new Error(`[requirePermission] unknown permission flag: ${flag}`);
+  }
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user?.clubId) throw new UnauthorizedError();
+      if (req.user.role === 'owner') { next(); return; } // owners hold all permissions
+
+      const { rows } = await db.query<Record<string, boolean>>(
+        `SELECT ${flag} AS allowed FROM users WHERE id = $1 AND club_id = $2`,
+        [req.user.sub, req.user.clubId]
+      );
+      if (!rows.length || rows[0].allowed !== true) {
+        throw new ForbiddenError(`Your account lacks the required permission: ${flag}`);
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
 export function requireClubResource(table: GuardedTable, idParam = 'id') {
   const sql = GUARDED_TABLES[table];
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
