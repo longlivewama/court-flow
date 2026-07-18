@@ -473,9 +473,26 @@ export async function listCustomers(
   } catch (err) { next(err); }
 }
 
+// Granular permission flags — kept in sync with migration 014 and the
+// requirePermission() allowlist in tenant.middleware.ts.
+const PERMISSION_KEYS = [
+  'can_view_schedule',
+  'can_verify_deposits',
+  'can_manage_coaches',
+  'can_view_finance',
+] as const;
+type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+const permissionsSchema = z.object({
+  can_view_schedule:   z.boolean(),
+  can_verify_deposits: z.boolean(),
+  can_manage_coaches:  z.boolean(),
+  can_view_finance:    z.boolean(),
+});
+
 // ── GET /api/users/staff (owner) ──────────────────────────────
 // Teammates permissions manager: every non-customer account with its
-// active/suspended state.
+// active/suspended state and granular permission flags.
 export async function listStaff(
   req: Request, res: Response, next: NextFunction
 ): Promise<void> {
@@ -483,6 +500,7 @@ export async function listStaff(
     const { rows } = await db.query(
       `SELECT id, email, first_name, last_name, phone, role, is_active,
               email_verified, created_at,
+              can_view_schedule, can_verify_deposits, can_manage_coaches, can_view_finance,
               (locked_until IS NOT NULL AND locked_until > NOW()) AS is_locked
          FROM users
         WHERE club_id = $1 AND role IN ('owner', 'receptionist')
@@ -491,6 +509,203 @@ export async function listStaff(
     );
 
     res.json({ data: rows });
+  } catch (err) { next(err); }
+}
+
+// ── POST /api/users/staff (owner) ─────────────────────────────
+// Provision a desk-staff (receptionist) or co-owner account with an explicit
+// granular permission set. A temporary password is generated and returned
+// once so the owner can hand it over (owners provision desk staff directly;
+// there is no public staff self-signup). Owner accounts implicitly hold every
+// permission, so their flags are all forced TRUE regardless of the toggles.
+const createStaffSchema = z.object({
+  firstName:   z.string().trim().min(1, 'First name is required').max(80),
+  lastName:    z.string().trim().min(1, 'Last name is required').max(80),
+  email:       z.string().trim().toLowerCase().email('A valid email is required'),
+  phone:       z.string().trim().max(32).optional(),
+  role:        z.enum(['receptionist', 'owner']).default('receptionist'),
+  permissions: permissionsSchema.partial().optional(),
+});
+
+/** Temp password guaranteed to satisfy PASSWORD_POLICY (letters + digits). */
+function generateTempPassword(): string {
+  const raw = crypto.randomBytes(12).toString('base64url').replace(/[^A-Za-z0-9]/g, '');
+  return `Cf${raw}9`.slice(0, 16);
+}
+
+export async function createStaff(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { firstName, lastName, email, phone, role, permissions } = createStaffSchema.parse(req.body);
+    const clubId = clubIdOf(req);
+
+    const { rows: existing } = await db.query(
+      `SELECT id FROM users WHERE club_id = $1 AND email = $2`,
+      [clubId, email]
+    );
+    if (existing.length) {
+      throw new ValidationError('An account with this email already exists in this club');
+    }
+
+    // Owners hold every permission; desk staff take the owner's explicit choices
+    // (any omitted flag defaults to false — least privilege for new accounts).
+    const perms: Record<PermissionKey, boolean> = {
+      can_view_schedule:   role === 'owner' ? true : permissions?.can_view_schedule   ?? false,
+      can_verify_deposits: role === 'owner' ? true : permissions?.can_verify_deposits ?? false,
+      can_manage_coaches:  role === 'owner' ? true : permissions?.can_manage_coaches  ?? false,
+      can_view_finance:    role === 'owner' ? true : permissions?.can_view_finance    ?? false,
+    };
+
+    const tempPassword  = generateTempPassword();
+    const passwordHash  = await hashPassword(tempPassword);
+    const userId        = uuidv4();
+    const emailVerified = !isProduction; // dev accounts are immediately usable
+
+    await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO users
+           (id, club_id, email, password_hash, role, first_name, last_name, phone, email_verified,
+            can_view_schedule, can_verify_deposits, can_manage_coaches, can_view_finance)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [userId, clubId, email, passwordHash, role, firstName, lastName, phone ?? null, emailVerified,
+         perms.can_view_schedule, perms.can_verify_deposits, perms.can_manage_coaches, perms.can_view_finance]
+      );
+
+      await auditLog({
+        clubId, userId: req.user!.sub, userRole: req.user!.role,
+        ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
+        actionType: AUDIT_ACTIONS.STAFF_CREATED, entityType: 'user', entityId: userId,
+        newValues: { email, role, permissions: perms },
+      });
+    });
+
+    // Best-effort verification email in production; dev logs the link instead.
+    if (isProduction) {
+      try {
+        const rawToken  = crypto.randomBytes(32).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await db.query(
+          `INSERT INTO email_verifications (user_id, token_hash, expires_at) VALUES ($1,$2,$3)`,
+          [userId, tokenHash, expiresAt.toISOString()]
+        );
+        const link = `${process.env.FRONTEND_URL}/verify-email?token=${rawToken}`;
+        await emailService.sendVerificationEmail({ to: email, firstName, verificationLink: link });
+      } catch (err) {
+        logger.warn({ err, email }, 'Staff verification email failed; account still created');
+      }
+    }
+
+    res.status(201).json({
+      user: { id: userId, email, role, firstName, lastName, isActive: true, permissions: perms },
+      // Returned once so the owner can share it; never persisted in plaintext.
+      tempPassword,
+    });
+  } catch (err) { next(err); }
+}
+
+// ── PATCH /api/users/:id/permissions (owner) ──────────────────
+export async function updateStaffPermissions(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const parsed = permissionsSchema.parse(req.body);
+    const clubId = clubIdOf(req);
+
+    const { rows: targetRows } = await db.query<{ role: string }>(
+      `SELECT role FROM users WHERE id = $1 AND club_id = $2`,
+      [req.params.id, clubId]
+    );
+    if (!targetRows.length) throw new NotFoundError('User', req.params.id);
+    if (targetRows[0].role === 'owner') {
+      throw new ValidationError('Owner accounts already hold every permission');
+    }
+
+    const { rows } = await db.query(
+      `UPDATE users
+          SET can_view_schedule = $2, can_verify_deposits = $3,
+              can_manage_coaches = $4, can_view_finance = $5, updated_at = NOW()
+        WHERE id = $1 AND club_id = $6
+        RETURNING id, email, first_name, last_name, role, is_active,
+                  can_view_schedule, can_verify_deposits, can_manage_coaches, can_view_finance`,
+      [req.params.id, parsed.can_view_schedule, parsed.can_verify_deposits,
+       parsed.can_manage_coaches, parsed.can_view_finance, clubId]
+    );
+
+    await auditLog({
+      clubId, userId: req.user!.sub, userRole: req.user!.role,
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.STAFF_PERMISSIONS_UPDATED,
+      entityType: 'user', entityId: req.params.id,
+      newValues: { ...parsed },
+    });
+
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+}
+
+// ── DELETE /api/users/:id (owner) ─────────────────────────────
+// Remove a teammate. A clean account (no booking/payment/audit history) is
+// hard-deleted; one with referencing activity is deactivated + token-revoked
+// instead, so we never orphan or corrupt the club's financial/audit trail.
+// Guards: never yourself, never the last active owner.
+export async function deleteStaff(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const clubId = clubIdOf(req);
+
+    if (req.params.id === req.user!.sub) {
+      throw new ValidationError('You cannot remove your own account');
+    }
+
+    const { rows: targetRows } = await db.query<{ role: string; email: string; is_active: boolean }>(
+      `SELECT role, email, is_active FROM users WHERE id = $1 AND club_id = $2`,
+      [req.params.id, clubId]
+    );
+    if (!targetRows.length) throw new NotFoundError('User', req.params.id);
+    const target = targetRows[0];
+
+    if (target.role === 'owner') {
+      const { rows: ownerCount } = await db.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM users
+          WHERE club_id = $1 AND role = 'owner' AND is_active = TRUE AND id <> $2`,
+        [clubId, req.params.id]
+      );
+      if (parseInt(ownerCount[0].n, 10) === 0) {
+        throw new ValidationError('Cannot remove the last active owner of the club');
+      }
+    }
+
+    // Refresh tokens / verifications / waitlist rows cascade on delete; the
+    // coach link is SET NULL. Activity FKs (bookings.created_by, payments.*,
+    // refunds.*, sessions.*) have no cascade and will raise 23503 → deactivate.
+    let mode: 'deleted' | 'deactivated';
+    try {
+      const { rowCount } = await db.query(
+        `DELETE FROM users WHERE id = $1 AND club_id = $2`,
+        [req.params.id, clubId]
+      );
+      if (!rowCount) throw new NotFoundError('User', req.params.id);
+      mode = 'deleted';
+    } catch (err: unknown) {
+      if ((err as { code?: string }).code === '23503') {
+        await db.query(
+          `UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1 AND club_id = $2`,
+          [req.params.id, clubId]
+        );
+        await db.query(
+          `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+          [req.params.id]
+        );
+        mode = 'deactivated';
+      } else {
+        throw err;
+      }
+    }
+
+    await auditLog({
+      clubId, userId: req.user!.sub, userRole: req.user!.role,
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.STAFF_REMOVED,
+      entityType: 'user', entityId: req.params.id,
+      newValues: { email: target.email, role: target.role, mode },
+    });
+
+    res.json({ id: req.params.id, removed: mode });
   } catch (err) { next(err); }
 }
 

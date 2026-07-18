@@ -1501,3 +1501,58 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   padding: 4px 12px;
   white-space: nowrap;
 }
+
+/* ── Staff manager: granular permission pills ───────────────── */
+.perm-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);   /* muted resting surface */
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background   var(--dur-fast) var(--ease-standard),
+    color        var(--dur-fast) var(--ease-standard);
+}
+.perm-pill:hover { border-color: var(--border-focus); }
+.perm-pill:disabled { opacity: 0.55; cursor: not-allowed; }
+.perm-pill.on {
+  border-color: var(--success-border);
+  background: var(--accent-green-bg);
+  color: var(--accent-green-text);
+}
+.perm-pill-check {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border-focus);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease-standard),
+              border-color var(--dur-fast) var(--ease-standard);
+}
+.perm-pill.on .perm-pill-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.45);
+}
+.perm-pill-label { font-size: 13px; font-weight: 500; line-height: 1.2; }
+.perm-pill-desc  { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; line-height: 1.35; }
+
+/* Discrete muted-red remove action */
+.btn-remove {
+  background: var(--error-bg);
+  color: var(--error);
+  border: 1px solid var(--error-border);
+}
+.btn-remove:hover { background: #3d1a1a; border-color: var(--error); }
