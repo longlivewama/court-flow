@@ -36,6 +36,9 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/admin/coaching',       label: 'Coaching',    icon: <Dumbbell size={15} />,     roles: ['owner', 'receptionist'], group: 'Operations' },
   { href: '/admin/lost-found',     label: 'Lost & Found', icon: <PackageSearch size={15} />, roles: ['owner', 'receptionist'], group: 'Operations' },
 
+  // Coach — restricted to their own coaching calendar & earnings
+  { href: '/dashboard/coaching',    label: 'My Coaching',  icon: <Dumbbell size={15} />,      roles: ['coach'], group: 'Main' },
+
   // Customer
   { href: '/dashboard/availability', label: 'Availability', icon: <LayoutDashboard size={15} />, roles: ['customer'], group: 'Main' },
   { href: '/dashboard/my-bookings', label: 'My Bookings',  icon: <CalendarCheck size={15} />, roles: ['customer'], group: 'Main' },

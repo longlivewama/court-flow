@@ -117,10 +117,14 @@ export function registerRoutes(app: Express): void {
   // ── Coaching & training ledger ────────────────────────────────
   const coaching = Router();
   coaching.use(authenticate, requireTenant);
-  coaching.get('/coaches',        requireRole('receptionist', 'owner', 'coach'), coachingCtrl.listCoaches);
+  // Coach viewport: own profile + allocated sessions + personal earnings only.
+  // Coaches deliberately do NOT get /coaches or /sessions — those expose the
+  // club-wide ledger (club_share, other coaches' payouts).
+  coaching.get('/me',             requireRole('coach', 'owner'), coachingCtrl.getMyCoachingView);
+  coaching.get('/coaches',        requireRole('receptionist', 'owner'), coachingCtrl.listCoaches);
   coaching.post('/coaches',       requireRole('owner'), coachingCtrl.createCoach);
   coaching.patch('/coaches/:id',  requireRole('owner'), requireClubResource('coaches'), coachingCtrl.updateCoach);
-  coaching.get('/sessions',       requireRole('receptionist', 'owner', 'coach'), coachingCtrl.listSessions);
+  coaching.get('/sessions',       requireRole('receptionist', 'owner'), coachingCtrl.listSessions);
   coaching.post('/sessions',      requireRole('receptionist', 'owner'), coachingCtrl.createSession);
   coaching.patch('/sessions/:id', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), coachingCtrl.updateSession);
   coaching.post('/sessions/:id/pay', requireRole('receptionist', 'owner'), requireClubResource('training_sessions'), coachingCtrl.markSessionPaid);

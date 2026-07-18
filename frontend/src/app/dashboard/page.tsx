@@ -93,9 +93,11 @@ export default function DashboardPage() {
   const router = useRouter();
   const isStaff = user?.role === 'owner' || user?.role === 'receptionist';
 
-  // Customers have their own home — this screen is the staff cockpit.
+  // Customers and coaches have their own homes — this screen is the staff cockpit.
   useEffect(() => {
-    if (user && !isStaff) router.replace('/dashboard/availability');
+    if (user && !isStaff) {
+      router.replace(user.role === 'coach' ? '/dashboard/coaching' : '/dashboard/availability');
+    }
   }, [user, isStaff, router]);
 
   const [todayBookings, setTodayBookings] = useState<BookingRow[]>([]);
