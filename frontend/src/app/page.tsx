@@ -7,17 +7,23 @@
  *   · Hero: pointer-parallax 3D isometric padel court wireframe (pure SVG)
  *   · Feature bento: live timetable morphs, escrow split, advisory-lock ball
  *   · Live Court Viewport masonry with native CSS slow hover-zoom
+ *   · ROI telemetry band — glowing micro-dashboard stat cards + sparklines
+ *   · Automation stack — the three enterprise infrastructure layers
  *   · Commercial subscription matrix (Base Club / Pro Club Elite)
  */
 import Link from 'next/link';
 import Image from 'next/image';
-import { useEffect, useState } from 'react';
+import {
+  useEffect, useState,
+  type ComponentType, type CSSProperties, type ReactNode,
+} from 'react';
 import {
   motion, AnimatePresence, type Variants,
 } from 'motion/react';
 import {
   ArrowRight, Check, ShieldCheck, Lock, Landmark, LayoutGrid,
   Trophy, GraduationCap, Building2, Smartphone,
+  TrendingUp, Timer, Activity, Server, MessageCircle, BarChart3,
 } from 'lucide-react';
 import { EASE_STANDARD, SPRING_GRID } from '@/lib/motion-tokens';
 import { TiltWrapper } from '@/components/ui/TiltWrapper';
@@ -227,17 +233,17 @@ interface ViewportTile {
 
 const VIEWPORT_TILES: ViewportTile[] = [
   {
-    // Brief · Centre Court — elevated three-quarter view of an indoor
-    // championship hard court at night: deep-green acrylic surface, crisp
-    // white lines, black surround drapes. Twin floodlight banks leave
-    // symmetrical pools of light on the surface; one lit ball rests at the
-    // service line. Empty, pristine — US Open night-session mood.
-    // Selected: forest-green hard court dissolving into black — the CourtFlow
-    // palette shot as a photograph.
-    src: 'https://images.unsplash.com/photo-1508129214940-7b2223ae0a08?q=80&w=1600&auto=format&fit=crop',
-    alt: 'Championship indoor centre court under night-league floodlights',
+    // Brief · Centre Court — vibrant, prestigious, crystal-clear championship
+    // court read from above: immaculate surface, razor-sharp line geometry,
+    // long raking light, a lone player mid-serve. Grand-slam prestige, the
+    // court itself as the hero graphic.
+    // Selected: elevated aerial of a tournament clay court at the moment of
+    // serve — crisp lines, raking sun, editorial sports-magazine grade.
+    // (Prior brief asked for a golf-course asset here; rejected off-brief.)
+    src: 'https://images.unsplash.com/photo-1554068865-24cecd4e34b8?q=80&w=1600&auto=format&fit=crop',
+    alt: 'Aerial view of a championship clay court during a serve',
     title: 'Centre Court',
-    sub: 'Championship-grade surface · night league booked 18–23h',
+    sub: 'Championship-grade surface · prime-time blocks booked solid',
     span: 'tile-c2 tile-r3',
     wide: true,
   },
@@ -268,12 +274,14 @@ const VIEWPORT_TILES: ViewportTile[] = [
     wide: false,
   },
   {
-    // Brief · Members' night — courtside VIP lounge after dark: leather
-    // armchairs, low brass table, string lights and warm bokeh, the
-    // floodlit court soft-focus beyond. Editorial hospitality photography.
-    // Selected: arched fireside lounge, velvet seating, warm low-key glow.
-    src: 'https://images.unsplash.com/photo-1558368417-57d31049c609?q=80&w=1600&auto=format&fit=crop',
-    alt: 'Courtside VIP lounge at night with the floodlit court beyond',
+    // Brief · Members' night — elite country-club clubhouse after dark,
+    // explicitly over luxury club facilities: an open glass pavilion glowing
+    // warm against a dusk sky, illuminated water and terrace seating below.
+    // Editorial hospitality photography, not a generic restaurant interior.
+    // Selected: night clubhouse pavilion over the illuminated club pool —
+    // warm lamplight against deep dusk blue, terrace umbrellas beyond.
+    src: 'https://images.unsplash.com/photo-1571896349842-33c89424de2d?q=80&w=1600&auto=format&fit=crop',
+    alt: 'Illuminated clubhouse pavilion over the club pool at night',
     title: 'Members’ night sessions',
     sub: 'Reserved weekly fixtures for VIP members',
     span: 'tile-c2 tile-r2',
@@ -293,13 +301,14 @@ const VIEWPORT_TILES: ViewportTile[] = [
     wide: false,
   },
   {
-    // Brief · Tournament mode — close crop of a wall-mounted display in a
-    // dark club hallway: a glowing green champion line advancing through a
-    // dark-glass bracket UI, shallow depth of field, screen-glow as the
-    // only light source. Sleek and executive.
-    // Selected: glowing LED standings board shot close in the dark.
-    src: 'https://images.unsplash.com/photo-1533237264985-ee62f6d342bb?q=80&w=1000&auto=format&fit=crop',
-    alt: 'Digital championship bracket display glowing in a dark hallway',
+    // Brief · Tournament mode — real championship-night atmosphere in place
+    // of the financial-style LED ticker wall: a floodlit stadium bowl, packed
+    // stands, brilliant green field of play. Finals-night scale and energy.
+    // Selected: floodlit stadium on a championship night — vibrant green
+    // pitch under the lights, the brand accent shot as an arena.
+    // (Originally requested asset ID 404s on Unsplash; replaced in-brief.)
+    src: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?q=80&w=1000&auto=format&fit=crop',
+    alt: 'Floodlit stadium bowl packed for a championship night',
     title: 'Tournament mode',
     sub: 'Automated brackets, seeds & standings',
     span: 'tile-r2',
@@ -322,6 +331,124 @@ const TIER_PRO = [
   'Full Tournament Bracket automation',
   'Multi-tenant analytics & finance suite',
   'Priority onboarding & migrations',
+];
+
+/* ── ROI telemetry band — micro-dashboard stat cards ─────────────────────── */
+interface TelemetryMetric {
+  icon:  ComponentType<{ size?: number }>;
+  value: string;
+  unit:  string;
+  label: string;
+  sub:   ReactNode;
+  spark: number[];   // 12-point decorative series; last point = current period
+}
+
+const TELEMETRY: TelemetryMetric[] = [
+  {
+    icon: TrendingUp,
+    value: '38', unit: '%',
+    label: 'More bookings in prime hours',
+    sub: <>Utilization lift inside <em>engineered pricing windows</em> — rolling 90-day tenant cohort</>,
+    spark: [52, 55, 54, 58, 61, 63, 62, 66, 70, 73, 77, 82],
+  },
+  {
+    icon: Timer,
+    value: '4.2', unit: 'h',
+    label: 'Front-desk admin saved weekly',
+    sub: <>Confirmations, deposits &amp; reminders run <em>fully automated</em> per club workspace</>,
+    spark: [1.1, 1.4, 1.8, 2.1, 2.4, 2.6, 3.0, 3.2, 3.5, 3.8, 4.0, 4.2],
+  },
+  {
+    icon: Activity,
+    value: '99.9', unit: '%',
+    label: 'Uptime — matches on schedule',
+    sub: <>Advisory-lock booking integrity under a <em>rolling 90-day SLA</em>, fleet-wide</>,
+    spark: [99.95, 99.92, 99.98, 99.96, 99.99, 99.97, 99.94, 99.98, 99.99, 99.96, 99.98, 99.99],
+  },
+];
+
+/** Decorative single-series micro-bars: muted green history, accent "now". */
+function MetricSpark({ points }: { points: number[] }) {
+  const W = 120, H = 26, GAP = 2;
+  const max = Math.max(...points);
+  const bw  = (W - GAP * (points.length - 1)) / points.length;
+  return (
+    <svg className="metric-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
+      {points.map((p, i) => {
+        const h = Math.max(2.5, (p / max) * H);
+        return (
+          <rect
+            key={i}
+            x={i * (bw + GAP)} y={H - h} width={bw} height={h} rx={1.5}
+            fill={i === points.length - 1 ? 'var(--accent-green)' : 'rgba(74, 222, 128, 0.18)'}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ── Automation stack — the three enterprise infrastructure layers ───────── */
+interface StackLayer {
+  icon:   ComponentType<{ size?: number; style?: CSSProperties }>;
+  index:  string;
+  kicker: string;
+  title:  string;
+  body:   string;
+  points: string[];
+}
+
+const AUTOMATION_STACK: StackLayer[] = [
+  {
+    icon: Server,
+    index: '01',
+    kicker: 'Tenant infrastructure',
+    title: 'Multi-tenant workspace security',
+    body: 'Every club is provisioned as a fully isolated workspace — its own '
+        + 'custom subdomain, its own database boundary, its own staff hierarchy. '
+        + 'JWT clubId claims scope every request at the API edge, so one '
+        + 'tenant’s data is unreachable from another’s by construction, '
+        + 'not by convention.',
+    points: [
+      'Custom club subdomains',
+      'Isolated per-club databases',
+      'JWT-scoped tenancy on every request',
+      'Owner / desk / coach / member RBAC',
+    ],
+  },
+  {
+    icon: MessageCircle,
+    index: '02',
+    kicker: 'Messaging & POS core',
+    title: 'Native serverless WhatsApp POS core',
+    body: 'A deterministic, logic-based messaging engine — state machines, not '
+        + 'LLM bloat — living where your members already are. It confirms '
+        + 'bookings instantly, tracks client threads against the tenant ledger, '
+        + 'and chases the 50% escrow deposit with precisely timed reminders '
+        + 'until the slot is secured.',
+    points: [
+      'Instant booking confirmations',
+      'Automated 50% escrow deposit reminders',
+      'Client data & thread tracking',
+      'Zero-latency logic replies — no LLM cost',
+    ],
+  },
+  {
+    icon: BarChart3,
+    index: '03',
+    kicker: 'Finance & inventory',
+    title: 'Live financial analytics & inventory controls',
+    body: 'Owner-only revenue grids consolidate courts, coaches and deposits in '
+        + 'real time across every club you operate. Gear rentals decrement live '
+        + 'stock at the desk, so a racket never leaves the rail unaccounted for '
+        + 'and quiet hours never hide a leaking ledger.',
+    points: [
+      'Real-time court booking ledgers',
+      'Multi-club revenue reporting grids',
+      'Live stock tracking for gear rentals',
+      'Owner-scoped exports & audit trails',
+    ],
+  },
 ];
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
@@ -529,26 +656,66 @@ export default function LandingPage() {
         </motion.div>
       </motion.section>
 
-      {/* ── Metrics band ── */}
+      {/* ── ROI telemetry band — live ops micro-dashboards ── */}
       <motion.section className="landing-section" style={{ paddingTop: 0 }}
-        initial="hidden" whileInView="visible" viewport={{ once: true, margin: '-70px' }} variants={REVEAL}>
-        <div
-          style={{
-            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 1, background: 'var(--border)', border: '1px solid var(--border)',
-            borderRadius: 12, overflow: 'hidden',
-          }}
-        >
-          {[
-            { value: '38%', label: 'more bookings in prime hours' },
-            { value: '4.2h', label: 'front-desk admin saved weekly' },
-            { value: '99.9%', label: 'uptime — matches on schedule' },
-          ].map((m) => (
-            <div key={m.label} style={{ background: 'var(--surface)', padding: '28px 24px', textAlign: 'center' }}>
-              <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: -1 }}>{m.value}</div>
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>{m.label}</div>
-            </div>
-          ))}
+        initial="hidden" whileInView="visible" viewport={{ once: true, margin: '-70px' }} variants={REVEAL_GROUP}>
+        <motion.p variants={REVEAL} style={{
+          textAlign: 'center', fontSize: 11.5, fontWeight: 600, letterSpacing: '0.09em',
+          textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 20,
+        }}>
+          Live fleet telemetry · aggregated across active club workspaces
+        </motion.p>
+        <div className="metric-grid">
+          {TELEMETRY.map((m) => {
+            const Icon = m.icon;
+            return (
+              <motion.div variants={REVEAL} key={m.label} className="metric-card">
+                <div className="metric-head">
+                  <span className="metric-chip"><Icon size={13} /></span>
+                  <span className="metric-live"><span className="metric-live-dot" />Live</span>
+                </div>
+                <div className="metric-value">{m.value}<small>{m.unit}</small></div>
+                <div className="metric-label">{m.label}</div>
+                <p className="metric-sub">{m.sub}</p>
+                <MetricSpark points={m.spark} />
+              </motion.div>
+            );
+          })}
+        </div>
+      </motion.section>
+
+      {/* ── Automation stack — enterprise infrastructure layers ── */}
+      <motion.section className="landing-section" initial="hidden" whileInView="visible"
+        viewport={{ once: true, margin: '-70px' }} variants={REVEAL_GROUP}>
+        <motion.div variants={REVEAL} style={{ textAlign: 'center', marginBottom: 40 }}>
+          <h2>Three automation layers. Zero desk chaos.</h2>
+          <p style={{ marginTop: 8 }}>The infrastructure that puts CourtFlow in the enterprise class.</p>
+        </motion.div>
+        <div className="stack-rail">
+          {AUTOMATION_STACK.map((layer) => {
+            const Icon = layer.icon;
+            return (
+              <motion.article variants={REVEAL} key={layer.index} className="stack-layer">
+                <div className="stack-index" aria-hidden>{layer.index}</div>
+                <div className="stack-main">
+                  <span className="bento-kicker">
+                    <Icon size={11} style={{ verticalAlign: -1, marginRight: 6 }} />
+                    {layer.kicker}
+                  </span>
+                  <div className="bento-title">{layer.title}</div>
+                  <p className="bento-body">{layer.body}</p>
+                  <div className="stack-points">
+                    {layer.points.map((pt) => (
+                      <span key={pt} className="stack-point">
+                        <Check size={11} style={{ color: 'var(--accent-green-text)', flexShrink: 0 }} />
+                        {pt}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </motion.article>
+            );
+          })}
         </div>
       </motion.section>
 
