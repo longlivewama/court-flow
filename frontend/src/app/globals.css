@@ -1510,6 +1510,185 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   white-space: nowrap;
 }
 
+/* ── ROI telemetry band — micro-dashboard stat cards ────────── */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--sp-4);
+}
+.metric-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: 16px;
+  /* Hairline sports-green glow border: gradient border-box under a
+     surface-colored padding-box, echoing the .pricing-pro technique
+     without its animation weight. */
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(
+      158deg,
+      rgba(34, 197, 94, 0.50),
+      rgba(34, 197, 94, 0.07) 34%,
+      rgba(34, 197, 94, 0.05) 66%,
+      rgba(74, 222, 128, 0.38)
+    ) border-box;
+  box-shadow:
+    0 0 30px rgba(34, 197, 94, 0.06),
+    inset 0 0 46px rgba(34, 197, 94, 0.03);
+  transition: box-shadow var(--dur-normal) var(--ease-standard),
+              transform  var(--dur-normal) var(--ease-standard);
+}
+.metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 44px rgba(34, 197, 94, 0.13),
+    inset 0 0 46px rgba(34, 197, 94, 0.05);
+}
+.metric-card::before {
+  /* Micro-grid telemetry texture, faded out toward the card foot */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(154, 158, 166, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(154, 158, 166, 0.055) 1px, transparent 1px);
+  background-size: 21px 21px;
+  -webkit-mask-image: radial-gradient(130% 95% at 50% 0%, #000 25%, transparent 80%);
+  mask-image: radial-gradient(130% 95% at 50% 0%, #000 25%, transparent 80%);
+  pointer-events: none;
+}
+/* The texture ::before is absolutely positioned and would paint over
+   in-flow children — lift the content into the same paint layer. */
+.metric-card > * { position: relative; }
+.metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.metric-chip {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  border: 1px solid var(--success-border);
+}
+.metric-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.metric-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--accent-green);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+  animation: metric-live-pulse 2.2s var(--ease-standard) infinite;
+}
+@keyframes metric-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+.metric-value {
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -1.6px;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.metric-value small {
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  color: var(--text-secondary);
+  margin-left: 3px;
+}
+.metric-label { font-size: 13.5px; font-weight: 500; color: var(--text-secondary); }
+.metric-sub   { font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55; }
+.metric-sub em { font-style: normal; font-weight: 500; color: var(--accent-green-text); }
+.metric-spark {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin-top: var(--sp-2);
+}
+
+/* ── Automation stack — enterprise infrastructure layers ────── */
+.stack-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 920px;
+  margin: 0 auto;
+}
+.stack-layer {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: var(--sp-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: var(--sp-6);
+  transition: border-color var(--dur-normal) var(--ease-standard),
+              transform    var(--dur-normal) var(--ease-standard);
+}
+.stack-layer:hover { border-color: var(--success-border); transform: translateY(-2px); }
+.stack-index {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  border: 1px solid var(--success-border);
+  border-radius: 12px;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+}
+.stack-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.stack-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.stack-point {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  padding: 5px 12px;
+  line-height: 1.35;
+}
+@media (max-width: 640px) {
+  .stack-layer { grid-template-columns: 1fr; gap: var(--sp-4); }
+}
+
 /* ── Staff manager: granular permission pills ───────────────── */
 .perm-pill {
   display: flex;
