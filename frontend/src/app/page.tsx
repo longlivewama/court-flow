@@ -10,16 +10,17 @@
  *   · Commercial subscription matrix (Base Club / Pro Club Elite)
  */
 import Link from 'next/link';
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import {
-  motion, useMotionValue, useSpring, useTransform,
-  AnimatePresence, type Variants,
+  motion, AnimatePresence, type Variants,
 } from 'motion/react';
 import {
   ArrowRight, Check, ShieldCheck, Lock, Landmark, LayoutGrid,
-  Trophy, GraduationCap, Building2,
+  Trophy, GraduationCap, Building2, Smartphone,
 } from 'lucide-react';
 import { EASE_STANDARD, SPRING_GRID } from '@/lib/motion-tokens';
+import { TiltWrapper } from '@/components/ui/TiltWrapper';
 
 /* ── Shared entrance variants ────────────────────────────────────────────── */
 const REVEAL: Variants = {
@@ -31,115 +32,35 @@ const REVEAL_GROUP: Variants = {
   visible: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } },
 };
 
-/* ── 3D isometric padel court (hand-projected wireframe) ─────────────────── */
-// Isometric projection of a 20m × 10m padel court with 4m glass walls.
-// All geometry is precomputed at module scope — deterministic, SSR-safe.
-const S  = 12.6;           // px per metre
-const OX = 300;            // viewBox origin offsets
-const OY = 88;
-function iso(x: number, y: number, z = 0): [number, number] {
-  return [
-    +(OX + (x - y) * 0.866 * S - 56).toFixed(1),
-    +(OY + (x + y) * 0.5 * S - z * 0.92 * S).toFixed(1),
-  ];
-}
-const pt   = (x: number, y: number, z = 0) => iso(x, y, z).join(',');
-const FLOOR = `${pt(0, 0)} ${pt(20, 0)} ${pt(20, 10)} ${pt(0, 10)}`;
-// Wall panels: (edge start, edge end) extruded to z=4 (glass 3m + mesh 1m)
-const WALLS: string[] = [
-  `${pt(0, 0)} ${pt(20, 0)} ${pt(20, 0, 4)} ${pt(0, 0, 4)}`,     // back-left run
-  `${pt(20, 0)} ${pt(20, 10)} ${pt(20, 10, 4)} ${pt(20, 0, 4)}`, // right back wall
-  `${pt(0, 0)} ${pt(0, 10)} ${pt(0, 10, 4)} ${pt(0, 0, 4)}`,     // left back wall
-];
-// Structural mesh verticals along the two long walls, every 2 metres
-const MESH_V: string[] = [];
-for (let x = 2; x < 20; x += 2) {
-  MESH_V.push(`M ${pt(x, 0).replace(',', ' ')} L ${pt(x, 0, 4).replace(',', ' ')}`);
-}
-for (let y = 2; y < 10; y += 2) {
-  MESH_V.push(`M ${pt(20, y).replace(',', ' ')} L ${pt(20, y, 4).replace(',', ' ')}`);
-  MESH_V.push(`M ${pt(0, y).replace(',', ' ')} L ${pt(0, y, 4).replace(',', ' ')}`);
-}
-// Glass seam (z=3) around the three drawn walls
-const GLASS_SEAM = [
-  `M ${pt(0, 0, 3).replace(',', ' ')} L ${pt(20, 0, 3).replace(',', ' ')}`,
-  `M ${pt(20, 0, 3).replace(',', ' ')} L ${pt(20, 10, 3).replace(',', ' ')}`,
-  `M ${pt(0, 0, 3).replace(',', ' ')} L ${pt(0, 10, 3).replace(',', ' ')}`,
-].join(' ');
-// Net across the middle (x=10), 1m high, with posts
-const NET_TOP  = `M ${pt(10, 0, 1).replace(',', ' ')} L ${pt(10, 10, 1).replace(',', ' ')}`;
-const NET_BASE = `M ${pt(10, 0).replace(',', ' ')} L ${pt(10, 10).replace(',', ' ')}`;
-const NET_MESH: string[] = [];
-for (let y = 1; y < 10; y += 1) {
-  NET_MESH.push(`M ${pt(10, y).replace(',', ' ')} L ${pt(10, y, 1).replace(',', ' ')}`);
-}
-// Service lines (x = 3 / 17) + centre service line
-const SERVICE = [
-  `M ${pt(3, 0).replace(',', ' ')} L ${pt(3, 10).replace(',', ' ')}`,
-  `M ${pt(17, 0).replace(',', ' ')} L ${pt(17, 10).replace(',', ' ')}`,
-  `M ${pt(3, 5).replace(',', ' ')} L ${pt(17, 5).replace(',', ' ')}`,
-].join(' ');
-
-function IsoPadelCourt() {
-  return (
-    <svg className="hero-court" viewBox="0 0 560 300" fill="none" aria-hidden>
-      {/* Floor plane */}
-      <polygon points={FLOOR} fill="rgba(34,197,94,0.05)" stroke="var(--accent-green)" strokeOpacity="0.55" strokeWidth="1.6" />
-      {/* Glass wall panels */}
-      {WALLS.map((w) => (
-        <polygon key={w} points={w} fill="rgba(255,255,255,0.015)" stroke="var(--border-focus)" strokeWidth="1.1" />
-      ))}
-      {/* Structural mesh lines */}
-      <path d={MESH_V.join(' ')} stroke="var(--border)" strokeWidth="0.8" opacity="0.85" />
-      {/* Glass/mesh seam */}
-      <path d={GLASS_SEAM} stroke="var(--border-focus)" strokeWidth="0.8" strokeDasharray="3 4" opacity="0.8" />
-      {/* Service geometry */}
-      <path d={SERVICE} stroke="var(--accent-green)" strokeOpacity="0.35" strokeWidth="1.1" />
-      {/* Net */}
-      <path d={NET_MESH.join(' ')} stroke="var(--accent-green)" strokeOpacity="0.28" strokeWidth="0.8" />
-      <path d={NET_BASE} stroke="var(--accent-green)" strokeOpacity="0.4" strokeWidth="1" />
-      <path d={NET_TOP} stroke="var(--accent-green-text)" strokeOpacity="0.85" strokeWidth="1.6" />
-      {/* Net posts */}
-      <path d={`M ${pt(10, 0).replace(',', ' ')} L ${pt(10, 0, 1).replace(',', ' ')} M ${pt(10, 10).replace(',', ' ')} L ${pt(10, 10, 1).replace(',', ' ')}`}
-        stroke="var(--accent-green-text)" strokeWidth="1.6" strokeOpacity="0.85" />
-    </svg>
-  );
-}
-
+/* ── Hero visual: premium court photograph with pointer/gyro 3D tilt ─────── */
 function HeroCourtStage() {
-  // Pointer parallax: raw pointer position → springs → rotation, all outside
-  // React state (motion values mutate the transform directly).
-  const px = useMotionValue(0);
-  const py = useMotionValue(0);
-  const sx = useSpring(px, { stiffness: 110, damping: 22, mass: 0.6 });
-  const sy = useSpring(py, { stiffness: 110, damping: 22, mass: 0.6 });
-  const rotateY = useTransform(sx, [-0.5, 0.5], [-11, 11]);
-  const rotateX = useTransform(sy, [-0.5, 0.5], [9, -7]);
-
   return (
-    <div
+    <motion.div
       className="hero-stage"
-      onPointerMove={(e) => {
-        const r = e.currentTarget.getBoundingClientRect();
-        px.set((e.clientX - r.left) / r.width - 0.5);
-        py.set((e.clientY - r.top) / r.height - 0.5);
-      }}
-      onPointerLeave={() => { px.set(0); py.set(0); }}
+      style={{ maxWidth: '100%' }}
+      initial={{ opacity: 0, y: 26 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.8, ease: EASE_STANDARD, delay: 0.15 }}
     >
-      <motion.div
-        style={{ rotateX, rotateY, transformStyle: 'preserve-3d' }}
-        initial={{ opacity: 0, y: 26 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: EASE_STANDARD, delay: 0.15 }}
+      <TiltWrapper
+        className="hero-tilt"
+        options={{ max: 10, glare: true, 'max-glare': 0.3, perspective: 1000, speed: 400 }}
+        style={{
+          position: 'relative', aspectRatio: '16 / 9', borderRadius: 20,
+          overflow: 'hidden', border: '1px solid var(--border-focus)',
+          boxShadow: '0 40px 80px rgba(34,197,94,0.10)',
+        }}
       >
-        <motion.div
-          animate={{ y: [0, -7, 0] }}
-          transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-        >
-          <IsoPadelCourt />
-        </motion.div>
-      </motion.div>
-    </div>
+        <Image
+          src="/images/landing-page.png"
+          alt="CourtFlow padel court, live booking grid overlay"
+          fill
+          priority
+          sizes="(max-width: 940px) 92vw, 852px"
+          style={{ objectFit: 'cover', objectPosition: 'center 42%' }}
+        />
+      </TiltWrapper>
+    </motion.div>
   );
 }
 
@@ -286,86 +207,105 @@ function ConcurrencyPath() {
   );
 }
 
-/* ── Live Court Viewport tiles (pure CSS/SVG renders) ────────────────────── */
-function TileCourtTopView() {
-  return (
-    <div className="tile-art" style={{ background: 'linear-gradient(160deg, #0E2318, #071109 70%)' }}>
-      <svg viewBox="0 0 200 130" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        <rect x="30" y="18" width="140" height="94" rx="3" fill="rgba(34,197,94,0.13)" stroke="rgba(74,222,128,0.55)" strokeWidth="1.4" />
-        <line x1="100" y1="18" x2="100" y2="112" stroke="rgba(244,245,246,0.5)" strokeWidth="1.2" strokeDasharray="4 3" />
-        <line x1="55" y1="18" x2="55" y2="112" stroke="rgba(244,245,246,0.28)" strokeWidth="1" />
-        <line x1="145" y1="18" x2="145" y2="112" stroke="rgba(244,245,246,0.28)" strokeWidth="1" />
-        <line x1="55" y1="65" x2="145" y2="65" stroke="rgba(244,245,246,0.28)" strokeWidth="1" />
-        <circle cx="128" cy="46" r="4" fill="#b8f5cd" opacity="0.9" />
-      </svg>
-    </div>
-  );
+/* ── Live Court Viewport — curated photographic art direction ────────────── */
+/**
+ * Each tile is a curated Unsplash photograph (hotlinked via their CDN, which
+ * Unsplash's license permits; hostname allow-listed in next.config.ts).
+ * The comment above each entry is the standing art-direction brief — to swap
+ * in commissioned photography later, replace the src (or drop a file in
+ * frontend/public/images/ and point src back at it). Interim local captures
+ * of the previous stylized art still exist there as offline fallbacks.
+ */
+interface ViewportTile {
+  src:   string;
+  alt:   string;
+  title: string;
+  sub:   string;
+  span:  string;   // masonry placement classes
+  wide:  boolean;  // spans 2 columns → larger responsive size
 }
-function TileGlassArena() {
-  return (
-    <div className="tile-art" style={{ background: 'linear-gradient(200deg, #101826, #070B12 75%)' }}>
-      <svg viewBox="0 0 200 200" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        <polygon points="30,120 100,85 170,120 100,155" fill="rgba(96,165,250,0.07)" stroke="rgba(96,165,250,0.45)" strokeWidth="1.2" />
-        <path d="M30 120 L30 74 L100 39 L170 74 L170 120 M100 85 L100 39" stroke="rgba(148,180,225,0.35)" strokeWidth="1" />
-        <path d="M48 111 L48 66 M65 102 L65 57 M135 102 L135 57 M152 111 L152 66" stroke="rgba(148,180,225,0.22)" strokeWidth="0.8" />
-        <path d="M65 137 L65 172 M135 137 L135 172" stroke="rgba(148,180,225,0.18)" strokeWidth="0.8" />
-      </svg>
-    </div>
-  );
-}
-function TileFloodlights() {
-  return (
-    <div className="tile-art" style={{ background: 'linear-gradient(180deg, #0B0D13, #05060A 80%)' }}>
-      <svg viewBox="0 0 200 200" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        <polygon points="60,14 20,190 108,190" fill="rgba(242,232,180,0.06)" />
-        <polygon points="140,14 92,190 186,190" fill="rgba(242,232,180,0.05)" />
-        <circle cx="60" cy="14" r="5" fill="rgba(255,246,200,0.85)" />
-        <circle cx="140" cy="14" r="5" fill="rgba(255,246,200,0.75)" />
-        <line x1="14" y1="176" x2="186" y2="176" stroke="rgba(74,222,128,0.35)" strokeWidth="1.2" />
-      </svg>
-    </div>
-  );
-}
-function TileRacketRoom() {
-  return (
-    <div className="tile-art" style={{ background: 'linear-gradient(140deg, #1A130C, #0B0704 75%)' }}>
-      <svg viewBox="0 0 200 130" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        {[36, 76, 116, 156].map((x, i) => (
-          <g key={x} opacity={0.75 - i * 0.1}>
-            <ellipse cx={x} cy="52" rx="15" ry="20" stroke="rgba(226,197,146,0.55)" strokeWidth="1.4" />
-            <path d={`M ${x} 72 L ${x} 96`} stroke="rgba(226,197,146,0.5)" strokeWidth="2.4" strokeLinecap="round" />
-            <path d={`M ${x - 8} 44 h 16 M ${x - 9} 52 h 18 M ${x - 8} 60 h 16 M ${x - 4} 36 v 30 M ${x + 4} 36 v 30 M ${x} 34 v 34`}
-              stroke="rgba(226,197,146,0.25)" strokeWidth="0.7" />
-          </g>
-        ))}
-      </svg>
-    </div>
-  );
-}
-function TileNightSession() {
-  return (
-    <div className="tile-art" style={{ background: 'radial-gradient(140% 120% at 20% 0%, #14231A 0%, #08100B 55%, #050807 100%)' }}>
-      <svg viewBox="0 0 200 130" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        <path d="M0 96 Q 60 70 100 88 T 200 84 L 200 130 L 0 130 Z" fill="rgba(34,197,94,0.10)" />
-        <path d="M0 96 Q 60 70 100 88 T 200 84" stroke="rgba(74,222,128,0.4)" strokeWidth="1.2" />
-        <circle cx="152" cy="34" r="13" stroke="rgba(244,245,246,0.35)" strokeWidth="1" />
-        <circle cx="152" cy="34" r="13" fill="rgba(244,245,246,0.04)" />
-      </svg>
-    </div>
-  );
-}
-function TileScoreboard() {
-  return (
-    <div className="tile-art" style={{ background: 'linear-gradient(170deg, #10131B, #06080D 80%)' }}>
-      <svg viewBox="0 0 200 130" style={{ width: '100%', height: '100%' }} preserveAspectRatio="xMidYMid slice" fill="none" aria-hidden>
-        <rect x="36" y="26" width="128" height="66" rx="6" stroke="rgba(154,158,166,0.4)" strokeWidth="1.2" fill="rgba(255,255,255,0.02)" />
-        <text x="66" y="70" fill="rgba(74,222,128,0.9)" fontSize="30" fontFamily="var(--font-mono)" fontWeight="600">6</text>
-        <text x="120" y="70" fill="rgba(154,158,166,0.75)" fontSize="30" fontFamily="var(--font-mono)" fontWeight="600">4</text>
-        <line x1="100" y1="38" x2="100" y2="80" stroke="rgba(154,158,166,0.3)" strokeWidth="1" />
-      </svg>
-    </div>
-  );
-}
+
+const VIEWPORT_TILES: ViewportTile[] = [
+  {
+    // Brief · Centre Court — elevated three-quarter view of an indoor
+    // championship hard court at night: deep-green acrylic surface, crisp
+    // white lines, black surround drapes. Twin floodlight banks leave
+    // symmetrical pools of light on the surface; one lit ball rests at the
+    // service line. Empty, pristine — US Open night-session mood.
+    // Selected: forest-green hard court dissolving into black — the CourtFlow
+    // palette shot as a photograph.
+    src: 'https://images.unsplash.com/photo-1508129214940-7b2223ae0a08?q=80&w=1600&auto=format&fit=crop',
+    alt: 'Championship indoor centre court under night-league floodlights',
+    title: 'Centre Court',
+    sub: 'Championship-grade surface · night league booked 18–23h',
+    span: 'tile-c2 tile-r3',
+    wide: true,
+  },
+  {
+    // Brief · Glass arena — panoramic padel court behind floor-to-ceiling
+    // structural glass, shot from the lounge side: warm lounge reflections
+    // ghosted on the glass, cool blue court beyond, polished concrete floor.
+    // Private-members'-club-looking-onto-the-arena energy.
+    // Selected: panoramic structural-glass padel court at golden hour.
+    src: 'https://images.unsplash.com/photo-1709587825415-814c2d7cfce7?q=80&w=1000&auto=format&fit=crop',
+    alt: 'Panoramic glass padel arena seen from the members’ lounge',
+    title: 'Glass arena',
+    sub: 'Panoramic padel · four-court arena',
+    span: 'tile-r3',
+    wide: false,
+  },
+  {
+    // Brief · Floodlit sessions — dusk exterior, low angle up at twin
+    // stadium masts: volumetric beams cutting through evening haze, long
+    // net-and-racket shadows raking the court. Teal-and-amber cinematic
+    // grade, lens flare kept subtle.
+    // Selected: floodlight rig cutting volumetric beams through night mist.
+    src: 'https://images.unsplash.com/photo-1509928015542-fcc9b3bcd048?q=80&w=1000&auto=format&fit=crop',
+    alt: 'Stadium floodlights casting volumetric beams over a court at dusk',
+    title: 'Floodlit sessions',
+    sub: 'Prime-time lighting & engineered pricing windows',
+    span: 'tile-r3',
+    wide: false,
+  },
+  {
+    // Brief · Members' night — courtside VIP lounge after dark: leather
+    // armchairs, low brass table, string lights and warm bokeh, the
+    // floodlit court soft-focus beyond. Editorial hospitality photography.
+    // Selected: arched fireside lounge, velvet seating, warm low-key glow.
+    src: 'https://images.unsplash.com/photo-1558368417-57d31049c609?q=80&w=1600&auto=format&fit=crop',
+    alt: 'Courtside VIP lounge at night with the floodlit court beyond',
+    title: 'Members’ night sessions',
+    sub: 'Reserved weekly fixtures for VIP members',
+    span: 'tile-c2 tile-r2',
+    wide: true,
+  },
+  {
+    // Brief · Gear rental — editorial still-life: three pro carbon padel
+    // rackets on a walnut display rail, fresh ball tubes, folded club
+    // towels, one overhead spot. Dark field, warm metallic highlights —
+    // watch-advert lighting.
+    // Selected: pro padel racket in raking editorial side-light.
+    src: 'https://images.unsplash.com/photo-1612534847738-b3af9bc31f0c?q=80&w=1000&auto=format&fit=crop',
+    alt: 'Pro padel rackets and club inventory on a lit display rail',
+    title: 'Gear rental',
+    sub: 'Curated pro equipment · live inventory',
+    span: 'tile-r2',
+    wide: false,
+  },
+  {
+    // Brief · Tournament mode — close crop of a wall-mounted display in a
+    // dark club hallway: a glowing green champion line advancing through a
+    // dark-glass bracket UI, shallow depth of field, screen-glow as the
+    // only light source. Sleek and executive.
+    // Selected: glowing LED standings board shot close in the dark.
+    src: 'https://images.unsplash.com/photo-1533237264985-ee62f6d342bb?q=80&w=1000&auto=format&fit=crop',
+    alt: 'Digital championship bracket display glowing in a dark hallway',
+    title: 'Tournament mode',
+    sub: 'Automated brackets, seeds & standings',
+    span: 'tile-r2',
+    wide: false,
+  },
+];
 
 /* ── Pricing data ────────────────────────────────────────────────────────── */
 const TIER_BASE = [
@@ -399,10 +339,15 @@ export default function LandingPage() {
       {/* Nav */}
       <nav className="landing-nav">
         <div className="nav-logo" style={{ padding: 0 }}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-            <rect width="20" height="20" rx="5" fill="#22C55E" />
-            <path d="M5 10h10M10 5v10" stroke="#06170C" strokeWidth="2" strokeLinecap="round" />
-          </svg>
+          <TiltWrapper
+            options={{ max: 3, glare: false, speed: 300 }}
+            style={{ display: 'inline-flex' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+              <rect width="20" height="20" rx="5" fill="#22C55E" />
+              <path d="M5 10h10M10 5v10" stroke="#06170C" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </TiltWrapper>
           CourtFlow
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -513,6 +458,48 @@ export default function LandingPage() {
               </div>
             </div>
           </motion.div>
+
+          <motion.div variants={REVEAL} className="bento-card bento-span-6">
+            <div style={{ display: 'flex', gap: 28, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 260px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <span className="bento-kicker" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span><Smartphone size={11} style={{ verticalAlign: -1, marginRight: 6 }} />Member app</span>
+                  <span
+                    style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
+                      color: 'var(--accent-green-text)', background: 'var(--accent-green-bg)',
+                      border: '1px solid var(--success-border)', borderRadius: 999,
+                      padding: '2px 9px', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Coming soon
+                  </span>
+                </span>
+                <div className="bento-title">A native-feeling booking app, on the way</div>
+                <p className="bento-body">
+                  The next extension of the CourtFlow ecosystem, now in development:
+                  members will browse live court availability, hold a slot and settle
+                  their 50% escrow deposit from their phone — the same real-time
+                  grid that powers the front desk, mirrored to their pocket.
+                </p>
+              </div>
+              <div style={{ flex: '0 1 220px', minWidth: 0, display: 'flex', justifyContent: 'center' }}>
+                <TiltWrapper
+                  options={{ max: 14, reverse: true, glare: true, 'max-glare': 0.25, perspective: 900, speed: 400 }}
+                  style={{ borderRadius: 24, overflow: 'hidden', border: '1px solid var(--border-focus)', maxWidth: 200 }}
+                >
+                  <Image
+                    src="/images/mobile-app.png"
+                    alt="CourtFlow member app — live court booking dashboard"
+                    width={1024}
+                    height={1536}
+                    sizes="200px"
+                    style={{ width: '100%', height: 'auto', display: 'block' }}
+                  />
+                </TiltWrapper>
+              </div>
+            </div>
+          </motion.div>
         </div>
       </motion.section>
 
@@ -524,30 +511,21 @@ export default function LandingPage() {
           <p style={{ marginTop: 8 }}>Purpose-built for padel and tennis clubs that feel like members-only lounges.</p>
         </motion.div>
         <motion.div variants={REVEAL} className="viewport-masonry">
-          <div className="viewport-tile tile-c2 tile-r3">
-            <TileCourtTopView />
-            <div className="tile-caption"><strong>Centre Court</strong><span>Night league · fully booked 18–23h</span></div>
-          </div>
-          <div className="viewport-tile tile-r3">
-            <TileGlassArena />
-            <div className="tile-caption"><strong>Glass arena</strong><span>Panoramic padel · 4 courts</span></div>
-          </div>
-          <div className="viewport-tile tile-r3">
-            <TileFloodlights />
-            <div className="tile-caption"><strong>Floodlit sessions</strong><span>Prime-time pricing windows</span></div>
-          </div>
-          <div className="viewport-tile tile-c2 tile-r2">
-            <TileNightSession />
-            <div className="tile-caption"><strong>Members&apos; night sessions</strong><span>VIP weekly fixed slots</span></div>
-          </div>
-          <div className="viewport-tile tile-r2">
-            <TileRacketRoom />
-            <div className="tile-caption"><strong>Gear rental</strong><span>Priced add-ons, live stock</span></div>
-          </div>
-          <div className="viewport-tile tile-r2">
-            <TileScoreboard />
-            <div className="tile-caption"><strong>Tournament mode</strong><span>Automated brackets & seeds</span></div>
-          </div>
+          {VIEWPORT_TILES.map((tile) => (
+            <div key={tile.src} className={`viewport-tile ${tile.span}`}>
+              <div className="tile-art">
+                <Image
+                  src={tile.src}
+                  alt={tile.alt}
+                  fill
+                  loading="lazy"
+                  sizes={tile.wide ? '(max-width: 880px) 100vw, 560px' : '(max-width: 880px) 50vw, 270px'}
+                  style={{ objectFit: 'cover' }}
+                />
+              </div>
+              <div className="tile-caption"><strong>{tile.title}</strong><span>{tile.sub}</span></div>
+            </div>
+          ))}
         </motion.div>
       </motion.section>
 

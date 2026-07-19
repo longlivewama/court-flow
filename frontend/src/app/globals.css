@@ -1385,32 +1385,40 @@ tr:hover td { background: rgba(255,255,255,0.01); }
 }
 .viewport-tile:hover .tile-art { transform: scale(1.16); }
 .viewport-tile::after {
-  /* Dark layered gradient mask over the artwork */
+  /* Readability mask over the photography — bottom-up: 90% → 40% → clear */
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(180deg, rgba(10,11,14,0.05) 30%, rgba(10,11,14,0.82) 92%),
-    linear-gradient(320deg, rgba(10,11,14,0.35), transparent 55%);
+  background: linear-gradient(
+    0deg,
+    rgba(5, 6, 8, 0.9) 0%,
+    rgba(5, 6, 8, 0.4) 42%,
+    transparent 72%
+  );
   pointer-events: none;
 }
 .tile-caption {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 12px;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .tile-caption strong {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
-  letter-spacing: -0.2px;
+  letter-spacing: -0.25px;
 }
-.tile-caption span { font-size: 11px; color: var(--text-secondary); }
+.tile-caption span {
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.15px;
+  line-height: 1.45;
+}
 .tile-r2 { grid-row: span 2; }
 .tile-r3 { grid-row: span 3; }
 .tile-c2 { grid-column: span 2; }
