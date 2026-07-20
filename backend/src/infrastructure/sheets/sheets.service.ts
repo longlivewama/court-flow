@@ -42,6 +42,14 @@ function isConfigured(): boolean {
   return Boolean(process.env.GOOGLE_SHEETS_CLIENT_EMAIL && process.env.GOOGLE_SHEETS_PRIVATE_KEY);
 }
 
+// Sheets evaluates USER_ENTERED cells starting with =, +, -, or @ as formulas
+// (CWE-1236). Member-supplied fields (name, phone) must be neutralized before
+// they reach the API so a crafted first name can't execute a formula in
+// front-desk staff's spreadsheet.
+function neutralizeFormula(value: string): string {
+  return /^[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
 // ── Service-account access token, cached until shortly before expiry ──────
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
@@ -129,7 +137,7 @@ export const sheetsService = {
     const tab = process.env.GOOGLE_SHEETS_TAB ?? 'Bookings';
     const bookingRef = bookingId.slice(0, 8).toUpperCase();
     const values = [
-      bookingRef, 'CONFIRMED', row.name, row.phone,
+      bookingRef, 'CONFIRMED', neutralizeFormula(row.name), neutralizeFormula(row.phone),
       row.courtName, row.timeslot, row.confirmedAt, row.channel,
     ];
 
