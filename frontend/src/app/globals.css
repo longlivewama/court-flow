@@ -1385,32 +1385,40 @@ tr:hover td { background: rgba(255,255,255,0.01); }
 }
 .viewport-tile:hover .tile-art { transform: scale(1.16); }
 .viewport-tile::after {
-  /* Dark layered gradient mask over the artwork */
+  /* Readability mask over the photography — bottom-up: 90% → 40% → clear */
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(180deg, rgba(10,11,14,0.05) 30%, rgba(10,11,14,0.82) 92%),
-    linear-gradient(320deg, rgba(10,11,14,0.35), transparent 55%);
+  background: linear-gradient(
+    0deg,
+    rgba(5, 6, 8, 0.9) 0%,
+    rgba(5, 6, 8, 0.4) 42%,
+    transparent 72%
+  );
   pointer-events: none;
 }
 .tile-caption {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 12px;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .tile-caption strong {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
-  letter-spacing: -0.2px;
+  letter-spacing: -0.25px;
 }
-.tile-caption span { font-size: 11px; color: var(--text-secondary); }
+.tile-caption span {
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.15px;
+  line-height: 1.45;
+}
 .tile-r2 { grid-row: span 2; }
 .tile-r3 { grid-row: span 3; }
 .tile-c2 { grid-column: span 2; }
@@ -1500,6 +1508,265 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   border-radius: var(--r-full);
   padding: 4px 12px;
   white-space: nowrap;
+}
+
+/* ── ROI telemetry band — micro-dashboard stat cards ────────── */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--sp-4);
+}
+.metric-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: 16px;
+  /* Hairline sports-green glow border: gradient border-box under a
+     surface-colored padding-box, echoing the .pricing-pro technique
+     without its animation weight. */
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(
+      158deg,
+      rgba(34, 197, 94, 0.50),
+      rgba(34, 197, 94, 0.07) 34%,
+      rgba(34, 197, 94, 0.05) 66%,
+      rgba(74, 222, 128, 0.38)
+    ) border-box;
+  box-shadow:
+    0 0 30px rgba(34, 197, 94, 0.06),
+    inset 0 0 46px rgba(34, 197, 94, 0.03);
+  transition: box-shadow var(--dur-normal) var(--ease-standard),
+              transform  var(--dur-normal) var(--ease-standard);
+}
+.metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 44px rgba(34, 197, 94, 0.13),
+    inset 0 0 46px rgba(34, 197, 94, 0.05);
+}
+.metric-card::before {
+  /* Micro-grid telemetry texture, faded out toward the card foot */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(154, 158, 166, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(154, 158, 166, 0.055) 1px, transparent 1px);
+  background-size: 21px 21px;
+  -webkit-mask-image: radial-gradient(130% 95% at 50% 0%, #000 25%, transparent 80%);
+  mask-image: radial-gradient(130% 95% at 50% 0%, #000 25%, transparent 80%);
+  pointer-events: none;
+}
+/* The texture ::before is absolutely positioned and would paint over
+   in-flow children — lift the content into the same paint layer. */
+.metric-card > * { position: relative; }
+.metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.metric-chip {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  border: 1px solid var(--success-border);
+}
+.metric-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.metric-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--accent-green);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+  animation: metric-live-pulse 2.2s var(--ease-standard) infinite;
+}
+@keyframes metric-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+.metric-value {
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -1.6px;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.metric-value small {
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  color: var(--text-secondary);
+  margin-left: 3px;
+}
+.metric-label { font-size: 13.5px; font-weight: 500; color: var(--text-secondary); }
+.metric-sub   { font-size: 11.5px; color: var(--text-tertiary); line-height: 1.55; }
+.metric-sub em { font-style: normal; font-weight: 500; color: var(--accent-green-text); }
+.metric-spark {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin-top: var(--sp-2);
+}
+
+/* ── Automation stack — enterprise infrastructure layers ────── */
+.stack-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 920px;
+  margin: 0 auto;
+}
+.stack-layer {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: var(--sp-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: var(--sp-6);
+  transition: border-color var(--dur-normal) var(--ease-standard),
+              transform    var(--dur-normal) var(--ease-standard);
+}
+.stack-layer:hover { border-color: var(--success-border); transform: translateY(-2px); }
+.stack-index {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  border: 1px solid var(--success-border);
+  border-radius: 12px;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+}
+.stack-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.stack-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.stack-point {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  padding: 5px 12px;
+  line-height: 1.35;
+}
+@media (max-width: 640px) {
+  .stack-layer { grid-template-columns: 1fr; gap: var(--sp-4); }
+}
+
+/* ── Landing chrome & shared shells ─────────────────────────── */
+.landing-hero-radial {
+  max-width: 900px;
+  background: radial-gradient(60% 55% at 50% 38%, rgba(34, 197, 94, 0.07), transparent 75%);
+}
+.section-head { text-align: center; margin-bottom: 40px; }
+.eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent-green);
+}
+.pill-green {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--accent-green-text);
+  background: var(--accent-green-bg);
+  border: 1px solid var(--success-border);
+  border-radius: var(--r-full);
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.metric-eyebrow {
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 20px;
+}
+.cta-row {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.cta-trust {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  margin-top: 20px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  flex-wrap: wrap;
+}
+.cta-trust span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.landing-footer {
+  border-top: 1px solid var(--border);
+  padding: var(--sp-6) var(--sp-8);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 1120px;
+  margin: 0 auto;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+.landing-footer-copy { font-size: 12.5px; color: var(--text-tertiary); }
+.landing-footer-links { display: flex; gap: 20px; font-size: 12.5px; }
+.landing-footer-links a { color: var(--text-secondary); }
+
+/* Continuous decorative loops stop for motion-sensitive users; one-shot
+   entrance fades are kept. JS-driven loops make the same check via
+   useReducedMotion in the landing islands. */
+@media (prefers-reduced-motion: reduce) {
+  .pricing-pro     { animation: none; }
+  .metric-live-dot { animation: none; }
+  .viewport-tile .tile-art        { transition: none; }
+  .viewport-tile:hover .tile-art  { transform: scale(1.03); }
 }
 
 /* ── Staff manager: granular permission pills ───────────────── */
