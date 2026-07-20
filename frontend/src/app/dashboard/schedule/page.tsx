@@ -531,7 +531,8 @@ export default function SchedulePage() {
   // the visible pixel window, so scrolling stays smooth at any density.
   const TIME_AXIS_W = 80;   // px — sticky time gutter
   const HEADER_H    = 58;   // px — sticky court header row
-  const MIN_COL_W   = 200;  // px — court column floor before horizontal scroll kicks in
+  const MIN_COL_W   = 240;  // px — court column floor before horizontal scroll kicks in
+                            //      (keeps 4+ courts legible instead of compressing)
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [gridWidth, setGridWidth] = useState(0);
@@ -838,23 +839,23 @@ export default function SchedulePage() {
                       display: 'flex',
                       alignItems: 'flex-start',
                       justifyContent: 'center',
-                      paddingTop: 6,
-                      background: isEven ? 'rgba(24,24,27,0.35)' : 'rgb(5,5,7)',
-                      borderBottom: '1px solid rgba(63,63,70,0.55)',
+                      paddingTop: 7,
+                      background: isEven ? 'rgba(32,32,38,0.55)' : 'rgb(5,5,7)',
+                      borderBottom: '1px solid rgba(82,82,91,0.4)',
                       boxSizing: 'border-box',
                     }}>
                       <span style={{
-                        fontSize: 9,
+                        fontSize: 11,
                         fontWeight: 800,
-                        color: isMidnight ? '#a1a1aa' : isNoon ? '#34d399' : '#52525b',
+                        color: isMidnight ? '#d4d4d8' : isNoon ? '#34d399' : '#9a9aa4',
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                        letterSpacing: '0.06em',
+                        letterSpacing: '0.04em',
                         whiteSpace: 'nowrap',
-                        lineHeight: 1,
+                        lineHeight: 1.15,
                         textShadow: isNoon ? '0 0 8px rgba(52,211,153,0.4)' : 'none',
                       }}>
                         {String(displayHour).padStart(2, '0')}:00<br />
-                        <span style={{ fontSize: 8, opacity: 0.7 }}>{ampm}</span>
+                        <span style={{ fontSize: 9, opacity: 0.85 }}>{ampm}</span>
                       </span>
                     </div>
                   );
@@ -889,11 +890,11 @@ export default function SchedulePage() {
                           left: 0, right: 0,
                           height: vr.size,
                           background: vr.index % 2 === 0
-                            ? 'rgba(24,24,27,0.35)'
+                            ? 'rgba(32,32,38,0.55)'
                             : 'transparent',
                           borderBottom: (HOURS[vr.index] % 24) === 11 || (HOURS[vr.index] % 24) === 23
-                            ? '1px solid rgba(99,102,241,0.12)'
-                            : '1px solid rgba(63,63,70,0.45)',
+                            ? '1px solid rgba(99,102,241,0.28)'
+                            : '1px solid rgba(82,82,91,0.4)',
                           boxSizing: 'border-box',
                           pointerEvents: 'none',
                           zIndex: 0,
