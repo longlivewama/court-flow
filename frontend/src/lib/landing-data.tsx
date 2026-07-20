@@ -70,14 +70,15 @@ export const VIEWPORT_TILES: ViewportTile[] = [
     wide: false,
   },
   {
-    // Brief · Members' night — elite country-club clubhouse after dark,
-    // explicitly over luxury club facilities: an open glass pavilion glowing
-    // warm against a dusk sky, illuminated water and terrace seating below.
-    // Editorial hospitality photography, not a generic restaurant interior.
-    // Selected: night clubhouse pavilion over the illuminated club pool —
-    // warm lamplight against deep dusk blue, terrace umbrellas beyond.
-    src: 'https://images.unsplash.com/photo-1571896349842-33c89424de2d?q=80&w=1600&auto=format&fit=crop',
-    alt: 'Illuminated clubhouse pavilion over the club pool at night',
+    // Brief · Members' night — elevated clubhouse vantage after dark,
+    // directly overlooking the club's own illuminated courts: floodlit
+    // playing surfaces glowing electric blue against the surrounding
+    // darkness, clubhouse building at the edge of frame. Authentic club
+    // photography, not resort/pool hospitality.
+    // Selected: night view over three brilliantly floodlit padel courts
+    // beside the clubhouse — courts radiant against the dark grounds.
+    src: 'https://images.unsplash.com/photo-1673266893352-6de89e258064?q=80&w=1600&auto=format&fit=crop',
+    alt: 'Floodlit padel courts glowing beside the clubhouse at night',
     title: 'Members’ night sessions',
     sub: 'Reserved weekly fixtures for VIP members',
     span: 'tile-c2 tile-r2',
