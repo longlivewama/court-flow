@@ -387,7 +387,10 @@ CREATE INDEX idx_audit_logs_club       ON audit_logs (club_id, timestamp_utc DES
 --  2. Row-Level Security prevents UPDATE/DELETE from app role
 -- ============================================================
 
--- Create a restricted DB role for audit writes (used only by app's audit service)
+-- Create a restricted DB role for audit writes (used only by app's audit service).
+-- The password here is a placeholder for fresh local/dev volumes only. On a real
+-- deployment the initdb hook zz_set_audit_writer_password.sh rotates it to
+-- $AUDIT_DB_PASSWORD so the source-controlled default never reaches production.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'audit_writer') THEN

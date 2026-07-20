@@ -64,7 +64,11 @@ export function registerRoutes(app: Express): void {
   const subscriptions = Router();
   subscriptions.use(authenticate, requireTenant);
   subscriptions.get('/',              subscriptionCtrl.listSubscriptions);
-  subscriptions.post('/',             requireRole('customer', 'receptionist', 'owner', 'admin'), subscriptionCtrl.createSubscriptionHandler);
+  // Staff-only: a VIP weekly subscription mints 4–12 confirmed, club-billed
+  // court reservations at once. Customers must never self-provision these
+  // (that would lock inventory for free), so a member sets one up by asking the
+  // front desk. Enforced again in the use case as defense in depth.
+  subscriptions.post('/',             requireRole('receptionist', 'owner'), subscriptionCtrl.createSubscriptionHandler);
   subscriptions.patch('/:id/revoke',  requireRole('owner'), requireClubResource('subscriptions'), subscriptionCtrl.revokeSubscription);
   app.use('/api/subscriptions', subscriptions);
 
@@ -111,8 +115,8 @@ export function registerRoutes(app: Express): void {
   tournaments.post('/',                   requireRole('owner'), tournamentCtrl.createTournament);
   tournaments.get('/:id',                 requireClubResource('tournaments'), tournamentCtrl.getTournament);
   tournaments.patch('/:id',               requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.updateTournament);
-  tournaments.post('/:id/teams',          requireRole('customer', 'receptionist', 'owner', 'admin'), requireClubResource('tournaments'), tournamentCtrl.registerTeam);
-  tournaments.post('/:id/teams/:teamId/pay', requireRole('customer', 'receptionist', 'owner', 'admin'), requireClubResource('tournaments'), tournamentCtrl.recordTeamPayment);
+  tournaments.post('/:id/teams',          requireRole('customer', 'receptionist', 'owner'), requireClubResource('tournaments'), tournamentCtrl.registerTeam);
+  tournaments.post('/:id/teams/:teamId/pay', requireRole('customer', 'receptionist', 'owner'), requireClubResource('tournaments'), tournamentCtrl.recordTeamPayment);
   tournaments.post('/:id/bracket',        requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.generateBracket);
   tournaments.patch('/:id/matches/:matchId', requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.recordMatchResult);
   app.use('/api/tournaments', tournaments);
@@ -148,14 +152,14 @@ export function registerRoutes(app: Express): void {
   // ── Booking routes ──────────────────────────────────────────
   const bookings = Router();
   bookings.use(authenticate, requireTenant);
-  bookings.get('/',                 requireRole('customer', 'receptionist', 'owner', 'admin'), bookingCtrl.listBookings);
+  bookings.get('/',                 requireRole('customer', 'receptionist', 'owner'), bookingCtrl.listBookings);
   // /me must be declared BEFORE /:id so it isn't matched as a booking id
-  bookings.get('/me',               requireRole('customer', 'receptionist', 'owner', 'admin'), bookingCtrl.listBookings);
+  bookings.get('/me',               requireRole('customer', 'receptionist', 'owner'), bookingCtrl.listBookings);
   // financial-summary must also be declared BEFORE /:id
   bookings.get('/financial-summary',  requireRole('receptionist', 'owner'), requirePermission('can_view_finance'), bookingCtrl.getFinancialSummary);
   // analytics-plots must also be declared BEFORE /:id
   bookings.get('/analytics-plots',    requireRole('owner'), bookingCtrl.getAnalyticsPlots);
-  bookings.post('/',                requireRole('customer', 'receptionist', 'owner', 'admin'), bookingCtrl.createBookingHandler);
+  bookings.post('/',                requireRole('customer', 'receptionist', 'owner'), bookingCtrl.createBookingHandler);
   bookings.get('/:id',              requireClubResource('bookings'), bookingCtrl.getBooking);
   bookings.post('/:id/receipt',
     requireRole('customer'),
@@ -219,8 +223,8 @@ export function registerRoutes(app: Express): void {
   settings.get('/',                      requireRole('owner'), courtCtrl.getClubSettings);
   settings.patch('/',                    requireRole('owner'), courtCtrl.updateClubSettings);
   // We need to un-protect settings root for these specific routes if settings router requires owner, or just add the roles
-  settings.get('/working-hours',         requireRole('customer', 'receptionist', 'owner', 'admin'), courtCtrl.getWorkingHours);
-  settings.put('/working-hours',         requireRole('owner', 'admin'), courtCtrl.upsertWorkingHours);
+  settings.get('/working-hours',         requireRole('customer', 'receptionist', 'owner'), courtCtrl.getWorkingHours);
+  settings.put('/working-hours',         requireRole('owner'), courtCtrl.upsertWorkingHours);
   app.use('/api/settings', settings);
 
   // ── Dashboard data endpoints ─────────────────────────────────

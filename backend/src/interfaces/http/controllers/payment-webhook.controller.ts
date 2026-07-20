@@ -28,9 +28,31 @@ import { UnauthorizedError, ValidationError } from '../../../shared/errors';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
+/**
+ * Fail fast at startup when the webhook secret is missing in production.
+ * Called from the bootstrap sequence (index.ts) so a misconfigured production
+ * server refuses to start rather than silently accepting webhooks signed with
+ * the well-known development default — which would let anyone forge a
+ * 'payment.succeeded' event and confirm arbitrary bookings for free.
+ * Mirrors the fatal-on-missing-key contract in jwt.service.ts.
+ */
+export function assertWebhookSecretConfigured(): void {
+  if (process.env.NODE_ENV === 'production' && !process.env.PAYMENT_WEBHOOK_SECRET) {
+    throw new Error(
+      '[payment-webhook] PAYMENT_WEBHOOK_SECRET must be set in production. ' +
+      'Refusing to start with the well-known development default.'
+    );
+  }
+}
+
 function webhookSecret(): string {
   const secret = process.env.PAYMENT_WEBHOOK_SECRET;
   if (secret) return secret;
+  // Defense in depth: even if the startup guard above was somehow bypassed,
+  // never fall back to the public default secret in production.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[payment-webhook] PAYMENT_WEBHOOK_SECRET is not configured');
+  }
   logger.warn('PAYMENT_WEBHOOK_SECRET is not set — using the dev-only default. Set it in production.');
   return 'dev-webhook-secret-change-me';
 }

@@ -4,7 +4,8 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from './stores/auth.store';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+// Same-origin default (see next.config.ts); nginx proxies /api → the API.
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 export const api = axios.create({
   baseURL: BASE_URL,
