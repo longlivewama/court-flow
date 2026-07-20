@@ -977,7 +977,10 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   grid-template-columns: 56px repeat(7, minmax(0, 1fr));
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
-  overflow: hidden;
+  /* Full 24-hour grid scrolls inside a bounded viewport instead of
+     stretching the page. Day headers + time gutter stay pinned. */
+  overflow: auto;
+  max-height: calc(100vh - 232px);
   background: var(--surface);
 }
 .week-head-cell {
@@ -991,17 +994,26 @@ tr:hover td { background: rgba(255,255,255,0.01); }
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
   border-left: 1px solid var(--border);
+  /* Keep weekday headers visible while scrolling the 24h grid vertically */
+  position: sticky;
+  top: 0;
+  z-index: 6;
 }
 .week-head-cell.today { color: var(--accent-green-text); }
 .week-time-cell {
   padding: var(--sp-1) var(--sp-2);
   font-size: 10px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
   font-family: var(--font-mono);
   text-align: right;
   border-top: 1px solid var(--border);
   background: var(--bg-elevated);
   height: 52px;
+  /* Keep the hour gutter pinned to the left edge of the scroll port */
+  position: sticky;
+  left: 0;
+  z-index: 4;
 }
 .week-slot {
   border-top: 1px solid rgba(255,255,255,0.04);

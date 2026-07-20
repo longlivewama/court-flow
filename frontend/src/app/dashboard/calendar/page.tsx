@@ -10,7 +10,7 @@
  *   · Click an empty slot  → New Booking panel pre-filled with that time
  *   · Click a booking      → Booking Details panel
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Repeat, CalendarPlus } from 'lucide-react';
 import { addDays, format, isSameDay, startOfWeek } from 'date-fns';
 import { api } from '@/lib/api';
@@ -18,9 +18,10 @@ import { NewBookingPanel } from '@/components/NewBookingPanel';
 import { BookingDetailsPanel } from '@/components/BookingDetailsPanel';
 import { calendarBlockStyle, catColor } from '@/lib/chartColors';
 
-const DAY_START_HOUR = 8;   // first visible row
-const DAY_END_HOUR   = 24;  // exclusive
-const ROW_HEIGHT     = 52;  // px — must match .week-slot height
+const DAY_START_HOUR    = 0;   // full 24-hour coverage — 00:00 … 23:00
+const DAY_END_HOUR      = 24;  // exclusive
+const ROW_HEIGHT        = 52;  // px — must match .week-slot height
+const DEFAULT_OPEN_HOUR = 8;   // grid auto-scrolls here on load (overridden by club hours)
 
 interface Court {
   id:           string;
@@ -55,6 +56,14 @@ export default function CalendarPage() {
   const [newStart, setNewStart]   = useState<Date | null>(null);
   const [detailsId, setDetailsId] = useState<string | null>(null);
 
+  // Hour the grid scrolls to on first paint. The full 00:00–23:00 range is
+  // always rendered (so no booking is ever hidden), but we open the viewport
+  // on the club's earliest configured opening hour to spare users a scroll
+  // through the empty overnight rows. Falls back to DEFAULT_OPEN_HOUR.
+  const [openHour, setOpenHour]   = useState(DEFAULT_OPEN_HOUR);
+  const gridRef        = useRef<HTMLDivElement>(null);
+  const hasAutoScrolled = useRef(false);
+
   const days  = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
   const hours = useMemo(
     () => Array.from({ length: DAY_END_HOUR - DAY_START_HOUR }, (_, i) => DAY_START_HOUR + i),
@@ -70,6 +79,24 @@ export default function CalendarPage() {
       .catch(() => { /* legend degrades gracefully */ });
   }, []);
 
+  // Pull the club's configured operating hours to choose a sensible initial
+  // scroll offset. We take the earliest opening hour across all open days so
+  // the weekly grid lands on the working window regardless of which day it is.
+  useEffect(() => {
+    api.get('/settings/working-hours')
+      .then(({ data }) => {
+        const rows: { open_time?: string; is_closed?: boolean }[] = Array.isArray(data) ? data : [];
+        const opens = rows
+          .filter((r) => !r.is_closed && r.open_time)
+          .map((r) => parseInt(r.open_time!.split(':')[0], 10))
+          .filter((h) => Number.isFinite(h));
+        if (opens.length) {
+          setOpenHour(Math.min(Math.max(Math.min(...opens), 0), 23));
+        }
+      })
+      .catch(() => { /* fall back to DEFAULT_OPEN_HOUR */ });
+  }, []);
+
   const load = useCallback(() => {
     setLoading(true);
     const from = weekStart.toISOString();
@@ -81,6 +108,14 @@ export default function CalendarPage() {
   }, [weekStart]);
 
   useEffect(load, [load]);
+
+  // Land the viewport on the working window once, after the grid first paints.
+  // Guarded by a ref so it never yanks the user's scroll on later re-renders.
+  useEffect(() => {
+    if (loading || hasAutoScrolled.current || !gridRef.current) return;
+    gridRef.current.scrollTop = openHour * ROW_HEIGHT;
+    hasAutoScrolled.current = true;
+  }, [loading, openHour]);
 
   // Stable identity color per court (sorted by number — matches every chart)
   const courtIndex = useMemo(() => {
@@ -171,7 +206,7 @@ export default function CalendarPage() {
       {loading ? (
         <div className="skeleton" style={{ height: 480, borderRadius: 12 }} />
       ) : (
-        <div className="week-grid" role="grid" aria-label="Weekly booking calendar">
+        <div className="week-grid" ref={gridRef} role="grid" aria-label="Weekly booking calendar">
           {/* Header row */}
           <div className="week-head-cell" style={{ borderLeft: 'none' }} aria-hidden />
           {days.map((d) => (
