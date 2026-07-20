@@ -232,7 +232,14 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
     let resolvedCustomerId = role === 'customer' ? userId : (customerId ?? null);
 
     if (role !== 'customer' && !resolvedCustomerId && parsed.customerName && parsed.customerPhone) {
-      const { rows } = await db.query('SELECT id FROM users WHERE phone = $1 LIMIT 1', [parsed.customerPhone]);
+      // Tenant isolation: a walk-in must be matched ONLY against members of the
+      // staff's own club. Without the club_id filter a phone number that happens
+      // to belong to a customer at another club would be silently reused here,
+      // cross-linking a booking to a foreign tenant's user row.
+      const { rows } = await db.query(
+        'SELECT id FROM users WHERE phone = $1 AND club_id = $2 LIMIT 1',
+        [parsed.customerPhone, clubIdOf(req)]
+      );
       if (rows.length > 0) {
         resolvedCustomerId = rows[0].id;
       } else {
@@ -423,6 +430,10 @@ export async function getReceiptHandler(req: Request, res: Response, next: NextF
     res.setHeader('Content-Type', receipt.file_mime);
     res.setHeader('Content-Disposition', `inline; filename="${receipt.file_name.replace(/"/g, '')}"`);
     res.setHeader('Cache-Control', 'private, no-store');
+    // Stop the browser from MIME-sniffing the bytes into something executable
+    // (e.g. treating a polyglot upload as HTML). Defense in depth on top of the
+    // magic-byte check enforced at upload time.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(fileBuffer);
   } catch (err) { next(err); }
 }
@@ -681,6 +692,15 @@ export async function settlePaymentHandler(req: Request, res: Response, next: Ne
 
       const existing = rows[0];
 
+      // A booking that has already been closed out (cancelled / expired /
+      // no-show / completed) must not have its financial fields rewritten —
+      // doing so would silently diverge the record from the state it was
+      // settled in and corrupt reconciliation.
+      const TERMINAL = ['cancelled', 'expired', 'no_show', 'completed'];
+      if (TERMINAL.includes(existing.status)) {
+        throw new ValidationError(`Cannot settle payment on a booking in '${existing.status}' status`);
+      }
+
       // Resolve final amounts (what will be stored)
       const finalDeposit   = depositAmount   ?? Number(existing.deposit_amount);
       const finalRemainder = remainderAmount ?? Number(existing.remainder_amount);
@@ -777,15 +797,17 @@ export async function getAnalyticsPlots(
     ];
 
     // ── 2. Hourly peak traffic ───────────────────────────────────
-    // Extract local hour from start_time, group and count.
-    // Only confirmed / checked_in / completed bookings count as traffic.
+    // Extract local hour from start_time, group and count. Only real, honoured
+    // bookings (confirmed / checked_in / completed) count as traffic — draft
+    // and unpaid-pending attempts are excluded so the peak reflects actual
+    // demand rather than abandoned booking attempts.
     const { rows: peakRows } = await db.query(
       `SELECT
          EXTRACT(HOUR FROM (start_time AT TIME ZONE $3))::int AS hour_slot,
          COUNT(*)::int                                          AS bookings_count
        FROM bookings
        WHERE club_id = $1
-         AND status  IN ('confirmed', 'checked_in', 'completed', 'draft', 'pending_deposit', 'pending_verification')
+         AND status  IN ('confirmed', 'checked_in', 'completed')
          AND created_at >= NOW() - ($2 || ' days')::interval
        GROUP BY hour_slot
        ORDER BY hour_slot`,

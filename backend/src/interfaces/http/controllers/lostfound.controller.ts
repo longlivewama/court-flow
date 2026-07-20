@@ -45,7 +45,7 @@ export function photoUploadMiddleware(req: Request, res: Response, next: NextFun
 // status; staff get the pending-claim count per item.
 export async function listItems(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const staff = ['receptionist', 'owner', 'admin'].includes(req.user!.role);
+    const staff = ['receptionist', 'owner'].includes(req.user!.role);
     const includeReturned = req.query.all === '1' && staff;
 
     const { rows } = await db.query(
@@ -81,6 +81,8 @@ export async function getItemPhoto(req: Request, res: Response, next: NextFuncti
 
     res.setHeader('Content-Type', rows[0].photo_mime ?? 'image/jpeg');
     res.setHeader('Cache-Control', 'private, max-age=3600');
+    // Prevent MIME-sniffing of the stored image bytes into an executable type.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(rows[0].photo_data);
   } catch (err) { next(err); }
 }

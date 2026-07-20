@@ -42,6 +42,21 @@ function formatDateTime(date: Date): string {
   return format(toZonedTime(date, TIMEZONE), 'dd/MM/yyyy HH:mm');
 }
 
+/**
+ * Escape user-controlled values before interpolating them into the HTML email
+ * body. Names (from registration), court names (owner-set), and rejection
+ * reasons are all attacker/tenant-influenced, so without this a crafted value
+ * could inject markup into a trusted, CourtFlow-branded email.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function baseTemplate(title: string, body: string): string {
   return `
 <!DOCTYPE html>
@@ -91,7 +106,7 @@ export const emailService = {
     to: string; firstName: string; verificationLink: string;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, welcome to CourtFlow!</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, welcome to CourtFlow!</p>
       <p>Please verify your email address to activate your account:</p>
       <a href="${opts.verificationLink}" class="cta">Verify Email Address</a>
       <p style="margin-top:24px;font-size:12px;color:#555">This link expires in 24 hours.</p>`;
@@ -108,9 +123,9 @@ export const emailService = {
     startTime: Date; token: string; expiresAt: Date;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, a slot you waitlisted for just opened up!</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, a slot you waitlisted for just opened up!</p>
       <div style="margin:20px 0;">
-        <div class="detail-row"><span class="detail-label">Court</span><span class="detail-value">${opts.courtName}</span></div>
+        <div class="detail-row"><span class="detail-label">Court</span><span class="detail-value">${escapeHtml(opts.courtName)}</span></div>
         <div class="detail-row"><span class="detail-label">Date & Time</span><span class="detail-value">${formatDateTime(opts.startTime)}</span></div>
         <div class="detail-row"><span class="detail-label">Claim Token</span><span class="detail-value">${opts.token}</span></div>
         <div class="detail-row"><span class="detail-label">Hold Expires</span><span class="detail-value">${formatDateTime(opts.expiresAt)}</span></div>
@@ -135,7 +150,7 @@ export const emailService = {
     const depositAmount = Number(opts.depositAmount);
     const totalPrice    = Number(opts.totalPrice);
     const body = `
-      <p>Hi ${opts.firstName}, your booking is confirmed!</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, your booking is confirmed!</p>
       <div style="margin:20px 0;">
         <div class="detail-row"><span class="detail-label">Booking ID</span><span class="detail-value">${opts.bookingId.slice(0,8).toUpperCase()}</span></div>
         <div class="detail-row"><span class="detail-label">Date & Time</span><span class="detail-value">${formatDateTime(opts.startTime)}</span></div>
@@ -155,9 +170,9 @@ export const emailService = {
     to: string; firstName: string; bookingId: string; reason: string;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, your payment receipt for booking <strong>${opts.bookingId.slice(0,8).toUpperCase()}</strong> was rejected.</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, your payment receipt for booking <strong>${opts.bookingId.slice(0,8).toUpperCase()}</strong> was rejected.</p>
       <div style="background:#1a0a0a;border:1px solid #3a0a0a;border-radius:6px;padding:16px;margin:20px 0;">
-        <p style="color:#f87171;margin:0;"><strong>Reason:</strong> ${opts.reason}</p>
+        <p style="color:#f87171;margin:0;"><strong>Reason:</strong> ${escapeHtml(opts.reason)}</p>
       </div>
       <p>Please re-upload a clear photo or PDF of your bank transfer receipt.</p>`;
     await sendWithRetry({
@@ -173,11 +188,11 @@ export const emailService = {
     startTime: Date; refundStatus: string;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, your booking has been cancelled.</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, your booking has been cancelled.</p>
       <div style="margin:20px 0;">
         <div class="detail-row"><span class="detail-label">Booking ID</span><span class="detail-value">${opts.bookingId.slice(0,8).toUpperCase()}</span></div>
         <div class="detail-row"><span class="detail-label">Original Date</span><span class="detail-value">${formatDateTime(opts.startTime)}</span></div>
-        <div class="detail-row"><span class="detail-label">Refund Status</span><span class="detail-value">${opts.refundStatus}</span></div>
+        <div class="detail-row"><span class="detail-label">Refund Status</span><span class="detail-value">${escapeHtml(opts.refundStatus)}</span></div>
       </div>`;
     await sendWithRetry({
       from:    process.env.EMAIL_FROM,
@@ -192,7 +207,7 @@ export const emailService = {
     startTime: Date; reminderType: string;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, this is a reminder for your upcoming court booking.</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, this is a reminder for your upcoming court booking.</p>
       <div style="text-align:center;padding:20px 0;">
         <div class="amount">${formatDateTime(opts.startTime)}</div>
         <p style="color:#666;margin-top:8px;">${opts.reminderType === '24h' ? '24 hours' : '2 hours'} from now</p>
@@ -210,7 +225,7 @@ export const emailService = {
     to: string; firstName: string; bookingId: string; startTime: Date;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, your booking for <strong>${formatDateTime(opts.startTime)}</strong> has been marked as a <strong>No Show</strong> because check-in was not completed within the grace period.</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, your booking for <strong>${formatDateTime(opts.startTime)}</strong> has been marked as a <strong>No Show</strong> because check-in was not completed within the grace period.</p>
       <p>If you believe this is an error, please contact the club directly.</p>`;
     await sendWithRetry({
       from:    process.env.EMAIL_FROM,
@@ -224,7 +239,7 @@ export const emailService = {
     to: string; firstName: string; resetLink: string;
   }): Promise<void> {
     const body = `
-      <p>Hi ${opts.firstName}, you requested a password reset.</p>
+      <p>Hi ${escapeHtml(opts.firstName)}, you requested a password reset.</p>
       <a href="${opts.resetLink}" class="cta">Reset Password</a>
       <p style="margin-top:24px;font-size:12px;color:#555">This link expires in 1 hour and can only be used once.</p>`;
     await sendWithRetry({

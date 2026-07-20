@@ -87,7 +87,7 @@ export function CommandMenu({ open, onClose }: CommandMenuProps) {
     {
       id: 'customers', label: 'Customer List', icon: <Users size={16} />,
       group: 'Navigation', roles: ['owner', 'receptionist'],
-      action: () => navigate('/customers'),
+      action: () => navigate('/admin/customers'),
     },
     {
       id: 'courts', label: 'Manage Courts', icon: <Settings size={16} />,

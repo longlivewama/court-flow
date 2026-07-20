@@ -10,11 +10,18 @@ services:
       POSTGRES_DB:       courtflow
       POSTGRES_USER:     courtflow
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-courtflow_pass}
+      # Consumed by the zz_set_audit_writer_password.sh init hook to rotate the
+      # audit_writer role off its migration placeholder. Must match the password
+      # in the api service's DATABASE_URL_AUDIT below.
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-CHANGE_IN_PRODUCTION}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    # Bind to loopback only: the API reaches Postgres over the internal compose
+    # network, so this host mapping is for local tooling and must never be
+    # exposed on a public interface (it would bypass nginx/TLS/app auth).
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U courtflow"]
       interval: 10s
@@ -29,8 +36,10 @@ services:
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_pass}
     volumes:
       - redisdata:/data
+    # Loopback only (see the postgres note above) — internal traffic uses the
+    # compose network; this mapping is for local debugging, not public exposure.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -69,13 +78,16 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: https://localhost/api
+        # Same-origin: the client bundle calls /api on whatever host served the
+        # page, and nginx proxies /api → api:4000. Works for any deployment
+        # domain without baking a hostname into the build.
+        NEXT_PUBLIC_API_URL: /api
     container_name: courtflow_frontend
     restart: unless-stopped
     depends_on:
       - api
     environment:
-      NEXT_PUBLIC_API_URL: https://localhost/api
+      NEXT_PUBLIC_API_URL: /api
     # Served through nginx (frontend:3000 on the compose network); no host port
     # publish so :3000 stays free for local `next dev`.
     expose:

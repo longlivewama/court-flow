@@ -12,15 +12,24 @@
  * subscription is rejected with the offending date so the club never sells a
  * "weekly" slot that silently skips weeks.
  *
- * Financial model: VIP slots are club-billed (invoice / pay-at-club), so
- * occurrences are created as `confirmed` with a zero deposit and the full slot
- * price outstanding. Staff settle each visit through the normal payment flow.
+ * Financial model: VIP slots are club-billed (invoice / pay-at-club) with a
+ * zero deposit and the full slot price outstanding, settled per visit through
+ * the normal payment flow.
+ *
+ * Authorization model: STAFF ONLY. A subscription mints 4–12 confirmed,
+ * club-billed court reservations at once, so a self-serve customer could use it
+ * to lock weeks of inventory for free. Access is restricted to owner/receptionist
+ * at the route (routes.ts) and re-checked here as defense in depth — a member
+ * arranges a VIP slot by asking the front desk, who provision it on their behalf
+ * (setting it up IS the verification step, mirroring create-booking.usecase.ts).
  */
 import { PoolClient } from 'pg';
 import { withTransaction } from '../../infrastructure/database/client';
 import { validateBookingSlot } from '../../domain/booking/booking.validator';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
-import { ValidationError, ConflictError } from '../../shared/errors';
+import { ValidationError, ConflictError, ForbiddenError } from '../../shared/errors';
+
+const STAFF_ROLES = ['owner', 'receptionist'];
 
 const WEEKS_PER_MONTH = 4;
 
@@ -52,10 +61,16 @@ export interface SubscriptionResult {
 export async function createSubscription(
   input: CreateSubscriptionInput
 ): Promise<SubscriptionResult> {
+  // Staff-only invariant (also enforced at the route). Never trust the caller
+  // to have been gated upstream — a subscription creates confirmed inventory,
+  // so a non-staff actor reaching here is a hard authorization failure.
+  if (!STAFF_ROLES.includes(input.createdByRole)) {
+    throw new ForbiddenError('Only club staff can create subscriptions.');
+  }
   if (input.termMonths !== 1 && input.termMonths !== 3) {
     throw new ValidationError('Subscription term must be 1 or 3 months');
   }
-  if (input.createdByRole === 'customer' && input.firstStartTime.getTime() < Date.now()) {
+  if (input.firstStartTime.getTime() < Date.now()) {
     throw new ValidationError('First session must be in the future.');
   }
 
@@ -82,7 +97,8 @@ export async function createSubscription(
     if (!clubRows.length) throw new ValidationError('Club not found');
     const depositPercent = clubRows[0].deposit_percent;
 
-    const isAdminRole = ['owner', 'receptionist', 'staff'].includes(input.createdByRole);
+    // Staff always bypass the working-hours gate (they can book any hour).
+    const isAdminRole = STAFF_ROLES.includes(input.createdByRole);
 
     // ── Validate every weekly occurrence up front ──────────────
     const starts: Date[] = Array.from({ length: occurrences }, (_, i) =>
@@ -125,6 +141,9 @@ export async function createSubscription(
     const subscriptionId = subRows[0].id;
 
     // ── Materialise each occurrence as a confirmed booking ─────
+    // Confirmed by fiat is safe here: only staff reach this use case (guarded at
+    // the route and again at the top), and a staff member setting up the VIP
+    // arrangement IS the verification step.
     const bookingIds: string[] = [];
     for (const start of starts) {
       const end = new Date(start.getTime() + input.durationMinutes * 60 * 1000);

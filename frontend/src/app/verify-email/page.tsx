@@ -13,7 +13,7 @@ import { useSearchParams } from 'next/navigation';
 import { Mail, CheckCircle2, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 type Phase = 'waiting' | 'verifying' | 'success' | 'error';
 

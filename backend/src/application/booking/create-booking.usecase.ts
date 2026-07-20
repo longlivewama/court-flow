@@ -85,9 +85,11 @@ export async function createBooking(
   const result = await withTransaction(async (client: PoolClient) => {
     // ── PESSIMISTIC LOCK: lock the court row for this transaction ──
     // This prevents concurrent bookings from passing validation simultaneously.
+    // Scoped by club_id so a courtId from another tenant can never lock or read
+    // a foreign club's court row (validateBookingSlot re-checks the same scope).
     await client.query(
-      `SELECT id FROM courts WHERE id = $1 FOR UPDATE`,
-      [input.courtId]
+      `SELECT id FROM courts WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+      [input.courtId, input.clubId]
     );
 
     // ── Fetch club settings (deposit %, expiry) ────────────────
@@ -103,10 +105,13 @@ export async function createBooking(
     const { deposit_percent } = settingsRows[0];
 
     // ── Fetch court price (+ name for the fail-safe ledger row) ─
+    // club_id-scoped: a cross-tenant courtId returns no row and fails fast below
+    // rather than reading another club's pricing.
     const { rows: courtRows } = await client.query<{ name: string; price_per_slot: number }>(
-      `SELECT name, price_per_slot FROM courts WHERE id = $1`,
-      [input.courtId]
+      `SELECT name, price_per_slot FROM courts WHERE id = $1 AND club_id = $2`,
+      [input.courtId, input.clubId]
     );
+    if (!courtRows.length) throw new ValidationError('Court not found');
     const { name: courtName, price_per_slot } = courtRows[0];
 
     // ── Reject past-dated customer bookings ────────────────────
