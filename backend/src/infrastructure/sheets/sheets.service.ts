@@ -108,7 +108,91 @@ async function sheetsFetch(path: string, init: RequestInit, attempt = 1): Promis
   return res.json();
 }
 
+// Resolve the club's connected spreadsheet, or null when the sync should be
+// skipped silently (Sheets not configured, or the club has no sheet linked).
+async function resolveSpreadsheetId(clubId: string, bookingId: string): Promise<string | null> {
+  if (!isConfigured()) {
+    logger.debug({ bookingId }, 'Google Sheets not configured; skipping ledger sync');
+    return null;
+  }
+
+  const clubs = await query<{ sheets_spreadsheet_id: string | null }>(
+    `SELECT sheets_spreadsheet_id FROM clubs WHERE id = $1`,
+    [clubId]
+  );
+  const spreadsheetId = clubs[0]?.sheets_spreadsheet_id;
+  if (!spreadsheetId) {
+    logger.debug({ clubId, bookingId }, 'Club has no connected spreadsheet; skipping ledger sync');
+    return null;
+  }
+  return spreadsheetId;
+}
+
+// Build the 8-column ledger row. The member-supplied name/phone are the only
+// untrusted cells, so they alone pass through neutralizeFormula — everything
+// else is server-derived and safe.
+function buildLedgerValues(bookingRef: string, status: string, row: LedgerBookingRow): string[] {
+  return [
+    bookingRef, status, neutralizeFormula(row.name), neutralizeFormula(row.phone),
+    row.courtName, row.timeslot, row.confirmedAt, row.channel,
+  ];
+}
+
+// Upsert a row keyed on Booking Ref (column A): an existing row is updated in
+// place, otherwise it is appended (with a header row on the sheet's first write).
+async function upsertByRef(
+  spreadsheetId: string,
+  tab: string,
+  bookingRef: string,
+  values: string[]
+): Promise<void> {
+  const existing = (await sheetsFetch(
+    `/${spreadsheetId}/values/${encodeURIComponent(`${tab}!A:A`)}`,
+    { method: 'GET' }
+  )) as { values?: string[][] };
+  const refs = existing.values ?? [];
+  const rowIndex = refs.findIndex((cells) => cells[0] === bookingRef);
+
+  if (rowIndex >= 0) {
+    const range = `${tab}!A${rowIndex + 1}:H${rowIndex + 1}`;
+    await sheetsFetch(
+      `/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+      { method: 'PUT', body: JSON.stringify({ values: [values] }) }
+    );
+  } else {
+    const rows = refs.length === 0 ? [HEADER_ROW, values] : [values];
+    await sheetsFetch(
+      `/${spreadsheetId}/values/${encodeURIComponent(`${tab}!A:H`)}:append` +
+        `?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      { method: 'POST', body: JSON.stringify({ values: rows }) }
+    );
+  }
+}
+
 export const sheetsService = {
+  /**
+   * Mirror a freshly-created booking into the club's fail-safe ledger with a
+   * 'PENDING_APPROVAL' status, the instant it is booked — so owners/staff see
+   * every reservation in the backup sheet even before the deposit is verified
+   * (and even if the main server later drops). Upserts on Booking Ref, so the
+   * later owner-approval sync updates this same row in place rather than
+   * duplicating it.
+   */
+  async syncPendingBooking(
+    clubId: string,
+    bookingId: string,
+    row: LedgerBookingRow
+  ): Promise<void> {
+    const spreadsheetId = await resolveSpreadsheetId(clubId, bookingId);
+    if (!spreadsheetId) return;
+
+    const tab = process.env.GOOGLE_SHEETS_TAB ?? 'Bookings';
+    const bookingRef = bookingId.slice(0, 8).toUpperCase();
+    await upsertByRef(spreadsheetId, tab, bookingRef, buildLedgerValues(bookingRef, 'PENDING_APPROVAL', row));
+
+    logger.info({ bookingId, clubId }, 'Pending booking mirrored to club fail-safe ledger spreadsheet');
+  },
+
   /**
    * Upsert the owner-approved booking into the club's connected spreadsheet.
    * Keyed on Booking Ref (column A): an existing row is updated in place,
@@ -119,50 +203,12 @@ export const sheetsService = {
     bookingId: string,
     row: LedgerBookingRow
   ): Promise<void> {
-    if (!isConfigured()) {
-      logger.debug({ bookingId }, 'Google Sheets not configured; skipping ledger sync');
-      return;
-    }
-
-    const clubs = await query<{ sheets_spreadsheet_id: string | null }>(
-      `SELECT sheets_spreadsheet_id FROM clubs WHERE id = $1`,
-      [clubId]
-    );
-    const spreadsheetId = clubs[0]?.sheets_spreadsheet_id;
-    if (!spreadsheetId) {
-      logger.debug({ clubId, bookingId }, 'Club has no connected spreadsheet; skipping ledger sync');
-      return;
-    }
+    const spreadsheetId = await resolveSpreadsheetId(clubId, bookingId);
+    if (!spreadsheetId) return;
 
     const tab = process.env.GOOGLE_SHEETS_TAB ?? 'Bookings';
     const bookingRef = bookingId.slice(0, 8).toUpperCase();
-    const values = [
-      bookingRef, 'CONFIRMED', neutralizeFormula(row.name), neutralizeFormula(row.phone),
-      row.courtName, row.timeslot, row.confirmedAt, row.channel,
-    ];
-
-    // Locate an existing row for this booking (column A holds the refs).
-    const existing = (await sheetsFetch(
-      `/${spreadsheetId}/values/${encodeURIComponent(`${tab}!A:A`)}`,
-      { method: 'GET' }
-    )) as { values?: string[][] };
-    const refs = existing.values ?? [];
-    const rowIndex = refs.findIndex((cells) => cells[0] === bookingRef);
-
-    if (rowIndex >= 0) {
-      const range = `${tab}!A${rowIndex + 1}:H${rowIndex + 1}`;
-      await sheetsFetch(
-        `/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
-        { method: 'PUT', body: JSON.stringify({ values: [values] }) }
-      );
-    } else {
-      const rows = refs.length === 0 ? [HEADER_ROW, values] : [values];
-      await sheetsFetch(
-        `/${spreadsheetId}/values/${encodeURIComponent(`${tab}!A:H`)}:append` +
-          `?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-        { method: 'POST', body: JSON.stringify({ values: rows }) }
-      );
-    }
+    await upsertByRef(spreadsheetId, tab, bookingRef, buildLedgerValues(bookingRef, 'CONFIRMED', row));
 
     logger.info({ bookingId, clubId }, 'Owner-confirmed booking synced to club ledger spreadsheet');
   },
