@@ -13,6 +13,9 @@ import { v4 as uuidv4 } from 'uuid';
 type ReportType = 'daily_revenue' | 'weekly_revenue' | 'monthly_revenue' | 'court_utilization'
   | 'booking_history' | 'customer_activity' | 'payment_history' | 'cancellation_report' | 'noshow_report';
 
+// Hard cap on rows fed into a synchronous report render (see fetchReportData).
+const MAX_REPORT_ROWS = 5000;
+
 // ── POST /api/reports/generate ────────────────────────────────
 export async function generateReport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -41,26 +44,8 @@ export async function generateReport(req: Request, res: Response, next: NextFunc
       actionType: AUDIT_ACTIONS.REPORT_GENERATED, entityType: 'report_job', entityId: jobId,
       newValues: { type, format, filters } });
 
-    // For small reports, process synchronously
-    const data = await fetchReportData(clubIdOf(req), type, filters);
-
-    let content: Buffer;
-    let contentType: string;
-    let fileName: string;
-
-    if (format === 'csv') {
-      content = generateCsv(data);
-      contentType = 'text/csv';
-      fileName = `${type}_${Date.now()}.csv`;
-    } else if (format === 'excel') {
-      content = await generateExcel(data, type);
-      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      fileName = `${type}_${Date.now()}.xlsx`;
-    } else {
-      content = await generatePdf(data, type);
-      contentType = 'application/pdf';
-      fileName = `${type}_${Date.now()}.pdf`;
-    }
+    // Small reports are built synchronously and streamed back immediately.
+    const { content, contentType, fileName } = await buildReport(clubIdOf(req), type, format, filters ?? {});
 
     await db.query(
       `UPDATE report_jobs SET status='completed', completed_at=NOW() WHERE id=$1`,
@@ -71,6 +56,33 @@ export async function generateReport(req: Request, res: Response, next: NextFunc
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(content);
   } catch (err) { next(err); }
+}
+
+interface BuiltReport { content: Buffer; contentType: string; fileName: string; }
+
+/**
+ * Fetch the report's data and render it into the requested format. Shared by
+ * generateReport (fresh) and downloadReport (re-materialised from the stored
+ * job), so both paths always agree and neither depends on a persisted file.
+ */
+async function buildReport(
+  clubId: string,
+  type: ReportType,
+  format: 'pdf' | 'excel' | 'csv',
+  filters: Record<string, string>,
+): Promise<BuiltReport> {
+  const data = await fetchReportData(clubId, type, filters);
+  if (format === 'csv') {
+    return { content: generateCsv(data), contentType: 'text/csv', fileName: `${type}_${Date.now()}.csv` };
+  }
+  if (format === 'excel') {
+    return {
+      content: await generateExcel(data, type),
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      fileName: `${type}_${Date.now()}.xlsx`,
+    };
+  }
+  return { content: await generatePdf(data, type), contentType: 'application/pdf', fileName: `${type}_${Date.now()}.pdf` };
 }
 
 // ── GET /api/reports ──────────────────────────────────────────
@@ -85,15 +97,26 @@ export async function listReports(req: Request, res: Response, next: NextFunctio
 }
 
 // ── GET /api/reports/:id/download ─────────────────────────────
+// Re-materialises the stored job (type/format/filters) and streams the file.
+// Reports are cheap to regenerate, so nothing is persisted to disk — this
+// avoids the previously-dead path that always returned a null storage key.
 export async function downloadReport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { rows } = await db.query(
-      `SELECT * FROM report_jobs WHERE id=$1 AND club_id=$2`,
+    const { rows } = await db.query<{
+      status: string; type: ReportType; format: 'pdf' | 'excel' | 'csv'; filters: Record<string, string> | null;
+    }>(
+      `SELECT status, type, format, filters FROM report_jobs WHERE id=$1 AND club_id=$2`,
       [req.params.id, clubIdOf(req)]
     );
     if (!rows.length) throw new NotFoundError('Report', req.params.id);
     if (rows[0].status !== 'completed') throw new ValidationError('Report is not yet ready');
-    res.json({ storageKey: rows[0].storage_key });
+
+    const { content, contentType, fileName } = await buildReport(
+      clubIdOf(req), rows[0].type, rows[0].format, rows[0].filters ?? {}
+    );
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(content);
   } catch (err) { next(err); }
 }
 
@@ -189,23 +212,47 @@ async function fetchReportData(clubId: string, type: ReportType, filters: Record
     },
   };
 
+  // Reports are generated synchronously in the request handler and rendered
+  // (PDF/XLSX) on the event loop, so cap the row set. A multi-year range on a
+  // busy club could otherwise pull an unbounded result into memory and block
+  // other tenants' requests while it formats. MAX_REPORT_ROWS is a fixed
+  // integer constant (never user input), so appending it is injection-safe.
   const q = QUERIES[type];
-  const { rows } = await db.query(q.sql, q.params);
+  const { rows } = await db.query(`${q.sql} LIMIT ${MAX_REPORT_ROWS}`, q.params);
   return rows;
+}
+
+// Spreadsheet apps evaluate any cell whose text begins with =, +, -, @ (or a
+// leading tab/CR) as a formula (CWE-1236). Report rows contain member-supplied
+// data (names, notes …), so neutralise every string cell with a leading
+// apostrophe before it reaches a CSV/Excel export. Mirrors the same guard in
+// sheets.service.ts. (PDF output is drawn as static text and is unaffected.)
+function neutralizeCell(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
+function neutralizeRows(data: unknown[]): Record<string, unknown>[] {
+  return data.map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(row as Record<string, unknown>)) out[k] = neutralizeCell(v);
+    return out;
+  });
 }
 
 function generateCsv(data: unknown[]): Buffer {
   if (!data.length) return Buffer.from('No data\n');
-  const headers = Object.keys(data[0] as object).join(',');
-  const rows = data.map((row) =>
-    Object.values(row as object).map((v) => JSON.stringify(v ?? '')).join(',')
+  const safe = neutralizeRows(data);
+  const headers = Object.keys(safe[0]).join(',');
+  const rows = safe.map((row) =>
+    Object.values(row).map((v) => JSON.stringify(v ?? '')).join(',')
   );
   return Buffer.from([headers, ...rows].join('\n'), 'utf-8');
 }
 
 async function generateExcel(data: unknown[], title: string): Promise<Buffer> {
   const xlsx = await import('xlsx');
-  const ws   = xlsx.utils.json_to_sheet(data as object[]);
+  const ws   = xlsx.utils.json_to_sheet(neutralizeRows(data));
   const wb   = xlsx.utils.book_new();
   xlsx.utils.book_append_sheet(wb, ws, title.slice(0, 31));
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;

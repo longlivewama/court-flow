@@ -6,7 +6,7 @@ COPY . .
 # NEXT_PUBLIC_* vars are inlined at build time, so the API URL must be present
 # during `next build`. Passed from docker-compose build.args (defaults to the
 # nginx TLS endpoint so the container's client bundle calls the API via nginx).
-ARG NEXT_PUBLIC_API_URL=https://localhost/api
+ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build

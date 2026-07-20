@@ -11,8 +11,35 @@ import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.ser
 import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
 import { addMinutes, startOfDay, endOfDay } from 'date-fns';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { z } from 'zod';
 
 const TIMEZONE  = 'Africa/Cairo';
+
+// Validation schemas — mirror createCourt's guards so an UPDATE can never
+// write a non-positive price, empty name, or out-of-range club setting that
+// downstream pricing/expiry logic trusts as sane.
+const COURT_STATUSES = ['available', 'closed', 'maintenance', 'reserved_club_event', 'reserved_tournament'] as const;
+
+const courtUpdateSchema = z.object({
+  name:         z.string().trim().min(1).max(100).optional(),
+  number:       z.number().int().positive().optional(),
+  description:  z.string().trim().max(500).nullable().optional(),
+  pricePerSlot: z.number().positive().optional(),
+  status:       z.enum(COURT_STATUSES).optional(),
+});
+
+const clubSettingsSchema = z.object({
+  depositPercent:              z.number().min(0).max(100).optional(),
+  cancellationDeadlineHours:   z.number().int().min(0).max(8760).optional(),
+  pendingDepositExpiryMinutes: z.number().int().min(1).max(10080).optional(),
+  noshowGraceMinutes:          z.number().int().min(0).max(1440).optional(),
+  reminder24hEnabled:          z.boolean().optional(),
+  reminder2hEnabled:           z.boolean().optional(),
+  name:                        z.string().trim().min(1).max(255).optional(),
+  email:                       z.string().trim().max(255).optional(),
+  phone:                       z.string().trim().max(50).optional(),
+  address:                     z.string().trim().max(1000).optional(),
+});
 
 // ── GET /api/courts ───────────────────────────────────────────
 export async function listCourts(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -86,7 +113,7 @@ export async function createCourt(req: Request, res: Response, next: NextFunctio
 // ── PATCH /api/courts/:id (owner only) ────────────────────────
 export async function updateCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { name, number, description, pricePerSlot, status } = req.body;
+    const { name, number, description, pricePerSlot, status } = courtUpdateSchema.parse(req.body);
     const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, clubIdOf(req)]);
     if (!old.length) throw new NotFoundError('Court', req.params.id);
 
@@ -326,17 +353,27 @@ export async function updateClubSettings(req: Request, res: Response, next: Next
     // snake_case field names (club_name, contact_email, contact_phone,
     // cancellation_cutoff_hrs, deposit_percentage) — same dual-naming pattern
     // used for bookings in booking.controller.ts.
-    const body = req.body;
-    const depositPercent             = body.depositPercent             ?? body.deposit_percentage;
-    const cancellationDeadlineHours  = body.cancellationDeadlineHours  ?? body.cancellation_cutoff_hrs;
-    const pendingDepositExpiryMinutes = body.pendingDepositExpiryMinutes ?? body.pending_deposit_expiry_minutes;
-    const noshowGraceMinutes         = body.noshowGraceMinutes         ?? body.noshow_grace_minutes;
-    const reminder24hEnabled         = body.reminder24hEnabled         ?? body.reminder_24h_enabled;
-    const reminder2hEnabled          = body.reminder2hEnabled          ?? body.reminder_2h_enabled;
-    const name                       = body.name                       ?? body.club_name;
-    const email                      = body.email                      ?? body.contact_email;
-    const phone                      = body.phone                      ?? body.contact_phone;
-    const address                    = body.address;
+    const body = req.body ?? {};
+    // Coerce blank/absent fields to undefined so they're skipped (COALESCE keeps
+    // the current value); everything supplied is range-validated by the schema.
+    const numOrUndef = (v: unknown) => (v === undefined || v === null || v === '' ? undefined : Number(v));
+    const strOrUndef = (v: unknown) => (v === undefined || v === null ? undefined : String(v));
+
+    const {
+      depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
+      reminder24hEnabled, reminder2hEnabled, name, email, phone, address,
+    } = clubSettingsSchema.parse({
+      depositPercent:              numOrUndef(body.depositPercent ?? body.deposit_percentage),
+      cancellationDeadlineHours:   numOrUndef(body.cancellationDeadlineHours ?? body.cancellation_cutoff_hrs),
+      pendingDepositExpiryMinutes: numOrUndef(body.pendingDepositExpiryMinutes ?? body.pending_deposit_expiry_minutes),
+      noshowGraceMinutes:          numOrUndef(body.noshowGraceMinutes ?? body.noshow_grace_minutes),
+      reminder24hEnabled:          body.reminder24hEnabled ?? body.reminder_24h_enabled,
+      reminder2hEnabled:           body.reminder2hEnabled ?? body.reminder_2h_enabled,
+      name:                        strOrUndef(body.name ?? body.club_name),
+      email:                       strOrUndef(body.email ?? body.contact_email),
+      phone:                       strOrUndef(body.phone ?? body.contact_phone),
+      address:                     strOrUndef(body.address),
+    });
 
     const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubIdOf(req)]);
     const { rows } = await db.query(

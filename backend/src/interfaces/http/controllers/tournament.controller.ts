@@ -17,7 +17,7 @@ import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.ser
 import { NotFoundError, ValidationError, ForbiddenError, ConflictError } from '../../../shared/errors';
 
 
-const STAFF_ROLES = ['receptionist', 'owner', 'admin'];
+const STAFF_ROLES = ['receptionist', 'owner'];
 
 function isStaff(role: string): boolean {
   return STAFF_ROLES.includes(role);
