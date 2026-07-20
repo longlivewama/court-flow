@@ -7,7 +7,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
     "test": "jest --coverage --forceExit",
+    "test:e2e": "node scripts/e2e-api-verification.mjs",
     "seed": "node dist/infrastructure/database/seed.js",
     "migrate": "node -r ts-node/register src/infrastructure/database/migrate.ts",
     "lint": "eslint src --ext .ts"

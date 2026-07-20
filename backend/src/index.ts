@@ -13,6 +13,7 @@ import { registerRoutes } from './interfaces/http/routes';
 import { globalErrorHandler } from './interfaces/http/middleware/error.middleware';
 import { startCronJobs } from './infrastructure/cron';
 import { seedDefaultOwner } from './infrastructure/database/seed';
+import { assertWebhookSecretConfigured } from './interfaces/http/controllers/payment-webhook.controller';
 
 // ── Process-level safety net ──────────────────────────────────
 // A stray rejection or throw outside a request handler would otherwise
@@ -83,6 +84,9 @@ const PORT = parseInt(process.env.PORT ?? '4000', 10);
 
 async function bootstrap() {
   try {
+    // Fail fast on fatal misconfiguration before opening any connections.
+    assertWebhookSecretConfigured();
+
     await db.connect();
     logger.info('✅ PostgreSQL connected');
 

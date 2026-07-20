@@ -8,6 +8,8 @@
  *   - Audit logging
  */
 import { createHash } from 'crypto';
+import { format } from 'date-fns';
+import { toZonedTime } from 'date-fns-tz';
 import { PoolClient } from 'pg';
 import { withTransaction } from '../../infrastructure/database/client';
 import { validateBookingSlot } from '../../domain/booking/booking.validator';
@@ -15,7 +17,17 @@ import { assertTransition, assertPaymentTransition } from '../../domain/booking/
 import { isPrimeTime, PRIME_TIME_EXPIRY_MINUTES } from '../../domain/booking/prime-time';
 import { auditLogStrict, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { emailService } from '../../infrastructure/email/email.service';
+import { sheetsService } from '../../infrastructure/sheets/sheets.service';
 import { ValidationError, ConflictError, ForbiddenError } from '../../shared/errors';
+import { logger } from '../../shared/logger';
+
+const TIMEZONE = 'Africa/Cairo';
+
+function formatTimeslot(start: Date, end: Date): string {
+  return `${format(toZonedTime(start, TIMEZONE), 'EEE dd MMM yyyy · HH:mm')}–${format(
+    toZonedTime(end, TIMEZONE), 'HH:mm'
+  )}`;
+}
 
 export interface BookingEquipmentLine {
   equipmentId: string;
@@ -55,15 +67,29 @@ export interface BookingResult {
   equipmentTotal:  number;
 }
 
+interface LedgerSnapshot {
+  bookingId: string;
+  name:      string;
+  phone:     string;
+  courtName: string;
+  timeslot:  string;
+}
+
 export async function createBooking(
   input: CreateBookingInput
 ): Promise<BookingResult> {
-  return withTransaction(async (client: PoolClient) => {
+  // Fail-safe ledger snapshot — captured inside the txn for a consistent read,
+  // then mirrored to the club sheet AFTER commit (off the request's hot path).
+  let ledger: LedgerSnapshot | null = null;
+
+  const result = await withTransaction(async (client: PoolClient) => {
     // ── PESSIMISTIC LOCK: lock the court row for this transaction ──
     // This prevents concurrent bookings from passing validation simultaneously.
+    // Scoped by club_id so a courtId from another tenant can never lock or read
+    // a foreign club's court row (validateBookingSlot re-checks the same scope).
     await client.query(
-      `SELECT id FROM courts WHERE id = $1 FOR UPDATE`,
-      [input.courtId]
+      `SELECT id FROM courts WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+      [input.courtId, input.clubId]
     );
 
     // ── Fetch club settings (deposit %, expiry) ────────────────
@@ -78,12 +104,15 @@ export async function createBooking(
     if (!settingsRows.length) throw new Error('Club not found');
     const { deposit_percent } = settingsRows[0];
 
-    // ── Fetch court price ──────────────────────────────────────
-    const { rows: courtRows } = await client.query<{ price_per_slot: number }>(
-      `SELECT price_per_slot FROM courts WHERE id = $1`,
-      [input.courtId]
+    // ── Fetch court price (+ name for the fail-safe ledger row) ─
+    // club_id-scoped: a cross-tenant courtId returns no row and fails fast below
+    // rather than reading another club's pricing.
+    const { rows: courtRows } = await client.query<{ name: string; price_per_slot: number }>(
+      `SELECT name, price_per_slot FROM courts WHERE id = $1 AND club_id = $2`,
+      [input.courtId, input.clubId]
     );
-    const { price_per_slot } = courtRows[0];
+    if (!courtRows.length) throw new ValidationError('Court not found');
+    const { name: courtName, price_per_slot } = courtRows[0];
 
     // ── Reject past-dated customer bookings ────────────────────
     // A customer must not be able to self-book a slot whose start time has
@@ -445,6 +474,19 @@ export async function createBooking(
       });
     }
 
+    // ── Capture the fail-safe ledger row (synced post-commit) ──
+    const { rows: contactRows } = await client.query<{ first_name: string; phone: string | null }>(
+      `SELECT first_name, phone FROM users WHERE id = $1`,
+      [input.customerId]
+    );
+    ledger = {
+      bookingId,
+      name:      contactRows[0]?.first_name ?? 'Member',
+      phone:     contactRows[0]?.phone ?? '',
+      courtName,
+      timeslot:  formatTimeslot(input.startTime, endTime),
+    };
+
     return {
       id:               bookingId,
       status:           initialStatus,
@@ -454,4 +496,24 @@ export async function createBooking(
       equipmentTotal,
     };
   });
+
+  // ── Emergency fail-safe ledger sync (background, best-effort) ──────────────
+  // Fired the instant a booking is created so owners/staff see it in the backup
+  // sheet immediately, with a 'PENDING_APPROVAL' status (the later deposit
+  // verification upserts the same row to 'CONFIRMED'). Deliberately NOT awaited:
+  // booking creation is the customer hot path and the sheet is a backup, not a
+  // source of truth — a Sheets outage must never slow or fail a committed booking.
+  const l = ledger as LedgerSnapshot | null;
+  if (l) {
+    void sheetsService
+      .syncPendingBooking(input.clubId, l.bookingId, {
+        name: l.name, phone: l.phone, courtName: l.courtName,
+        timeslot: l.timeslot, confirmedAt: '', channel: '',
+      })
+      .catch((err) =>
+        logger.warn({ err, bookingId: l.bookingId }, 'Pending-booking ledger sync failed; booking preserved')
+      );
+  }
+
+  return result;
 }
