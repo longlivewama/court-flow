@@ -97,6 +97,24 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
       [clubIdOf(req), rangeDays]
     );
 
+    // ── Cancellation accounting (immutable ledger) ─────────────────
+    // A cancelled booking is excluded from the VERIFIED booking-revenue query
+    // above, so it can never inflate earnings. But a deposit FORFEITED on a late
+    // cancellation is genuinely retained income — we add it back from the ledger
+    // here. Refunds are money that left the club; because the underlying booking
+    // is already excluded from revenue, we report refundsOut for transparency
+    // WITHOUT subtracting it again (that would double-count the loss).
+    const { rows: ledgerRows } = await db.query(
+      `SELECT
+         COALESCE(SUM(amount) FILTER (WHERE entry_type = 'FORFEIT_INCOME'), 0)::numeric AS forfeited_income,
+         COALESCE(SUM(amount) FILTER (WHERE entry_type = 'REFUND'),         0)::numeric AS refunds_out,
+         COUNT(*) FILTER (WHERE entry_type = 'FORFEIT_INCOME')::int                     AS forfeit_count,
+         COUNT(*) FILTER (WHERE entry_type = 'REFUND')::int                             AS refund_count
+       FROM ledger_entries
+       WHERE club_id = $1 AND created_at >= NOW() - ($2 || ' days')::interval`,
+      [clubIdOf(req), rangeDays]
+    );
+
     // ── Monthly P&L series (last 6 calendar months) ────────────────
     const { rows: monthlyRevenue } = await db.query(
       `SELECT month, SUM(amount)::numeric AS revenue FROM (
@@ -166,7 +184,13 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
     const expensesByCategory = expenseRows.map((r) => ({ category: r.category as string, total: Number(r.total) }));
     const operatingExpenses  = expensesByCategory.reduce((s, e) => s + e.total, 0);
 
-    const totalRevenue = bookings + tournaments + training;
+    // Cancellation ledger figures
+    const forfeitedIncome = Number(ledgerRows[0].forfeited_income);
+    const refundsOut      = Number(ledgerRows[0].refunds_out);
+    const forfeitCount    = Number(ledgerRows[0].forfeit_count);
+    const refundCount     = Number(ledgerRows[0].refund_count);
+
+    const totalRevenue = bookings + tournaments + training + forfeitedIncome;
     const totalCosts   = operatingExpenses + coachPayouts;
     const netProfit    = totalRevenue - totalCosts;
     const marginPct    = totalRevenue > 0 ? Math.round((netProfit / totalRevenue) * 1000) / 10 : 0;
@@ -222,6 +246,13 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
       });
     }
 
+    if (refundsOut > 0 && refundCount > 0) {
+      recommendations.push({
+        severity: 'info',
+        text: `EGP ${Math.round(refundsOut).toLocaleString()} was refunded across ${refundCount} cancellation(s) in the last ${rangeDays} days${forfeitedIncome > 0 ? `, offset by EGP ${Math.round(forfeitedIncome).toLocaleString()} in forfeited deposits retained` : ''}. Review your cancellation-deadline window if refunds are trending up.`,
+      });
+    }
+
     if (operatingExpenses > 0 && expensesByCategory[0] && expensesByCategory[0].total / operatingExpenses > 0.45) {
       const top = expensesByCategory[0];
       recommendations.push({
@@ -257,6 +288,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
           bookings,
           tournaments,
           training,
+          forfeitedDeposits: forfeitedIncome,
           total: totalRevenue,
           rentalsWithinBookings: rentalsCurrent,
           rentalsPreviousPeriod: rentalsPrevious,
@@ -265,6 +297,16 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
           operatingExpenses,
           coachPayouts,
           total: totalCosts,
+        },
+        // Cancellation impact, sourced from the immutable ledger. refundsOut is
+        // reported for transparency but is NOT re-subtracted from netProfit (the
+        // refunded booking is already excluded from revenue upstream).
+        cancellations: {
+          forfeitedIncome,
+          refundsOut,
+          forfeitCount,
+          refundCount,
+          netImpact: forfeitedIncome - refundsOut,
         },
         trainingClubShare,
         tournamentOutstanding,

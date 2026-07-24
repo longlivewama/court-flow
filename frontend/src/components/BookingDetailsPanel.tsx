@@ -46,6 +46,25 @@ interface BookingDetails {
   subscription?:    { status: string; term_months: number; occurrences: number; weekly_price: string | number } | null;
   equipment:        EquipmentLine[];
   equipment_total:  number;
+  // Cancellation outcome (populated once the booking is cancelled)
+  refund_status?:      string | null;
+  refund_amount?:      string | number | null;
+  cancellation_reason?: string | null;
+  cancelled_at?:       string | null;
+}
+
+// Client-side default; the server holds the authoritative, per-club value and
+// always returns the real outcome. Used only for the pre-cancel estimate.
+const DEFAULT_DEADLINE_HOURS = 24;
+
+function refundStatusLabel(s?: string | null): { label: string; color: string } {
+  switch (s) {
+    case 'REFUNDED':       return { label: 'Refunded',        color: 'var(--accent-green-text)' };
+    case 'FORFEITED':      return { label: 'Deposit forfeited', color: 'var(--warning)' };
+    case 'PARTIAL':        return { label: 'Partially refunded', color: 'var(--warning)' };
+    case 'NOT_APPLICABLE': return { label: 'No payment collected', color: 'var(--text-tertiary)' };
+    default:               return { label: s ?? '—', color: 'var(--text-tertiary)' };
+  }
 }
 
 const TERMINAL_STATUSES = ['cancelled', 'completed', 'no_show', 'expired'];
@@ -67,6 +86,7 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
   const [error, setError]       = useState('');
   const [cancelMode, setCancelMode] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [refundOverride, setRefundOverride] = useState<'auto' | 'refund' | 'forfeit'>('auto');
   const [acting, setActing]     = useState(false);
 
   const load = useCallback(() => {
@@ -84,16 +104,26 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
       setBooking(null);
       setCancelMode(false);
       setCancelReason('');
+      setRefundOverride('auto');
       load();
     }
   }, [open, bookingId, load]);
 
   async function cancelBooking() {
     if (!bookingId) return;
+    // Staff must always give a reason (mirrors the server-side guard).
+    if (isStaff && !cancelReason.trim()) {
+      setError('A cancellation reason is required.');
+      return;
+    }
     setActing(true);
     setError('');
     try {
-      await api.patch(`/bookings/${bookingId}/cancel`, { reason: cancelReason || undefined });
+      await api.patch(`/bookings/${bookingId}/cancel`, {
+        reason: cancelReason.trim() || undefined,
+        // Only staff may override the automatic deadline policy.
+        ...(isStaff && refundOverride !== 'auto' ? { refundOverride } : {}),
+      });
       onChanged?.();
       load();
       setCancelMode(false);
@@ -132,6 +162,21 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
   const canCancel  = booking && !TERMINAL_STATUSES.includes(booking.status);
   const canCheckIn = isStaff && booking?.status === 'confirmed';
 
+  // Pre-cancel refund estimate (server returns the authoritative outcome).
+  const collectedEstimate =
+    (booking?.deposit_method && booking.deposit_method !== 'NONE' ? deposit : 0) +
+    (booking?.remainder_method && booking.remainder_method !== 'NONE' ? remainder : 0);
+  const hoursUntilStart = booking
+    ? (new Date(booking.start_time).getTime() - Date.now()) / 3_600_000
+    : 0;
+  const estimatedAfterDeadline = hoursUntilStart < DEFAULT_DEADLINE_HOURS;
+  const estimatedOutcome: 'none' | 'refund' | 'forfeit' =
+    collectedEstimate <= 0        ? 'none'
+    : refundOverride === 'refund' ? 'refund'
+    : refundOverride === 'forfeit' ? 'forfeit'
+    : estimatedAfterDeadline      ? 'forfeit'
+    : 'refund';
+
   return (
     <Drawer
       open={open}
@@ -144,15 +189,49 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
                 className="input"
-                placeholder="Reason for cancellation (optional)"
+                placeholder={isStaff ? 'Reason for cancellation (required)' : 'Reason for cancellation (optional)'}
                 value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)}
+                aria-label="Cancellation reason"
               />
+
+              {/* Staff-only refund override */}
+              {isStaff && collectedEstimate > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Deposit handling</label>
+                  <select
+                    className="input"
+                    value={refundOverride}
+                    onChange={(e) => setRefundOverride(e.target.value as 'auto' | 'refund' | 'forfeit')}
+                    aria-label="Deposit handling"
+                  >
+                    <option value="auto">Auto (apply deadline policy)</option>
+                    <option value="refund">Force full refund (goodwill)</option>
+                    <option value="forfeit">Force forfeit deposit</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Refund estimate */}
+              <div style={{
+                fontSize: 12, lineHeight: 1.5, padding: '8px 12px', borderRadius: 8,
+                background: 'var(--surface-2)', border: '1px solid var(--border)',
+                color: 'var(--text-secondary)',
+              }}>
+                {estimatedOutcome === 'none' && 'No payment was collected — nothing to refund.'}
+                {estimatedOutcome === 'refund' && `Estimated outcome: EGP ${collectedEstimate.toFixed(0)} will be refunded.`}
+                {estimatedOutcome === 'forfeit' && `Estimated outcome: deposit of EGP ${collectedEstimate.toFixed(0)} will be forfeited (within ${DEFAULT_DEADLINE_HOURS}h of start).`}
+              </div>
+
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn btn-secondary btn-sm" onClick={() => setCancelMode(false)} disabled={acting}>
                   Keep booking
                 </button>
-                <button className="btn btn-danger btn-sm" onClick={cancelBooking} disabled={acting}>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={cancelBooking}
+                  disabled={acting || (isStaff && !cancelReason.trim())}
+                >
                   {acting ? 'Cancelling…' : 'Confirm cancellation'}
                 </button>
               </div>
@@ -195,6 +274,25 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
               </span>
             )}
           </div>
+
+          {/* Cancellation outcome summary */}
+          {booking.status === 'cancelled' && (
+            <div className="card-sm" style={{ background: 'var(--surface-2)', borderLeft: '3px solid var(--error-border)' }}>
+              <div className="price-row">
+                <span>Refund status</span>
+                <strong style={{ color: refundStatusLabel(booking.refund_status).color }}>
+                  {refundStatusLabel(booking.refund_status).label}
+                  {Number(booking.refund_amount) > 0 ? ` · EGP ${Number(booking.refund_amount).toFixed(0)}` : ''}
+                </strong>
+              </div>
+              {booking.cancellation_reason && (
+                <div className="price-row">
+                  <span>Reason</span>
+                  <strong style={{ textAlign: 'right', maxWidth: 220 }}>{booking.cancellation_reason}</strong>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Who / where / when */}
           <div className="card-sm" style={{ background: 'var(--surface-2)' }}>
