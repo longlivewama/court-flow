@@ -357,11 +357,17 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       [user.id, refreshHash, req.ip, req.headers['user-agent'], refreshExpiry.toISOString()]
     );
 
-    // Set refresh token in HttpOnly, Secure, SameSite=Strict cookie
+    // Refresh token cookie: HttpOnly + SameSite=Lax. Lax (not Strict) so the
+    // cookie is delivered reliably on the silent refresh that fires after a
+    // hard reload / direct-URL navigation — Strict can withhold it in some
+    // browser navigation contexts, surfacing as a spurious "No refresh token".
+    // CSRF is still covered: the refresh route is a POST (Lax never sends the
+    // cookie on a cross-site POST) and the new access token is returned in the
+    // response body, which cross-site JS cannot read.
     res.cookie('courtflow_refresh', refreshToken, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge:   7 * 24 * 60 * 60 * 1000,
       path:     '/api/auth/refresh',
     });
