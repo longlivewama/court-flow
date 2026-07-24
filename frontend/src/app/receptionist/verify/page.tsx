@@ -24,7 +24,13 @@ interface PendingBooking {
   court_name: string; start_time: string; end_time: string; duration_minutes: number;
   deposit_amount: number; total_price: number;
   deposit_method: string; remainder_amount: number; deposit_status: string;
-  payment_id: string;
+  // Null when the customer never submitted a deposit/receipt: the booking is
+  // stuck in 'pending_verification' with no payment row to approve. Used to
+  // guard the Approve action so it never fires a guaranteed-to-404 request.
+  payment_id?: string | null;
+  // Whether a receipt image exists (from GET /bookings has_receipt). Drives the
+  // ReceiptViewer `exists` prop so it skips a 404-guaranteed fetch when absent.
+  has_receipt?: boolean;
 }
 
 function methodLabel(m?: string) {
@@ -59,12 +65,21 @@ export default function VerifyPage() {
 
   useEffect(() => { load(); }, []);
 
-  async function handleApprove(bookingId: string) {
-    setProcessing(bookingId);
+  async function handleApprove(booking: PendingBooking) {
+    // Guard: a booking with no payment row has nothing to verify. Fire a clear
+    // message instead of a request that would 404 ("Payment not found") in the
+    // console. This mirrors the backend's 400 guard as a first line of defense.
+    if (!booking.payment_id) {
+      setActionError(
+        `${booking.first_name} ${booking.last_name} has no payment/receipt on file — this booking can't be approved. Ask them to upload a deposit receipt, or delete the stale booking.`
+      );
+      return;
+    }
+    setProcessing(booking.id);
     setActionError('');
     try {
-      await api.patch(`/bookings/${bookingId}/verify`, { action: 'approve' });
-      setBookings((prev) => prev.filter((b) => b.id !== bookingId));
+      await api.patch(`/bookings/${booking.id}/verify`, { action: 'approve' });
+      setBookings((prev) => prev.filter((b) => b.id !== booking.id));
     } catch (err: unknown) {
       const axErr = err as { response?: { data?: { message?: string } } };
       setActionError(axErr?.response?.data?.message ?? 'Failed to approve deposit.');
@@ -235,6 +250,19 @@ export default function VerifyPage() {
                       {methodLabel(b.deposit_method)}
                     </span>
                   </div>
+
+                  {/* No-payment warning: this booking has no payment row, so it
+                      cannot be verified. Explains the disabled Approve button. */}
+                  {!b.payment_id && (
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      fontSize: 12, fontWeight: 600, color: '#f59e0b',
+                      background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
+                      borderRadius: 8, padding: '6px 12px',
+                    }}>
+                      ⚠️ No payment/receipt on file — cannot be approved
+                    </span>
+                  )}
                 </div>
 
                 {/* ── Middle: deposit receipt image (side-by-side) ── */}
@@ -245,7 +273,7 @@ export default function VerifyPage() {
                   }}>
                     Deposit Receipt
                   </div>
-                  <ReceiptViewer bookingId={b.id} maxHeight={160} />
+                  <ReceiptViewer bookingId={b.id} exists={b.has_receipt} maxHeight={160} />
                 </div>
 
                 {/* ── Right: actions ── */}
@@ -261,10 +289,16 @@ export default function VerifyPage() {
 
                   <motion.button
                     className="btn btn-sm"
-                    style={{ background: 'var(--success-bg)', color: 'var(--success)', border: '1px solid var(--success-border)' }}
-                    onClick={() => handleApprove(b.id)}
-                    disabled={processing === b.id}
-                    whileTap={{ scale: 0.95 }}
+                    style={{
+                      background: 'var(--success-bg)', color: 'var(--success)',
+                      border: '1px solid var(--success-border)',
+                      opacity: b.payment_id ? 1 : 0.5,
+                      cursor: b.payment_id ? undefined : 'not-allowed',
+                    }}
+                    onClick={() => handleApprove(b)}
+                    disabled={processing === b.id || !b.payment_id}
+                    title={b.payment_id ? undefined : 'No payment record on file — nothing to approve'}
+                    whileTap={{ scale: b.payment_id ? 0.95 : 1 }}
                     aria-label={`Approve deposit for ${b.first_name}`}
                     id={`approve-${b.id}`}
                   >
