@@ -4,11 +4,10 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
-import { randomBytes, createHash } from 'crypto';
 import { createBooking } from '../../../application/booking/create-booking.usecase';
-import { isPrimeTime, WAITLIST_HOLD_MINUTES } from '../../../domain/booking/prime-time';
 import { uploadReceipt } from '../../../application/booking/upload-receipt.usecase';
 import { verifyDeposit } from '../../../application/booking/verify-deposit.usecase';
+import { cancelBooking, CancelActorRole } from '../../../application/booking/cancel-booking.usecase';
 import { deleteBooking } from '../../../application/booking/delete-booking.usecase';
 import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
@@ -484,164 +483,42 @@ export async function checkinHandler(req: Request, res: Response, next: NextFunc
 }
 
 // ── PATCH /api/bookings/:id/cancel ───────────────────────────
+// Customer self-service cancellation OR staff/owner override. All of the
+// policy, refund/forfeit settlement, ledger + audit writes, waitlist routing
+// and notifications live in the concurrency-safe cancelBooking use case.
+const cancelBookingSchema = z.object({
+  reason:         z.string().trim().max(1000).optional(),
+  // Staff-only override of the automatic deadline policy.
+  refundOverride: z.enum(['auto', 'refund', 'forfeit']).optional(),
+});
+
 export async function cancelBookingHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { reason } = req.body;
+    const parsed = cancelBookingSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw new ValidationError('Invalid cancellation payload');
+    const { reason, refundOverride } = parsed.data;
 
-    // Populated inside the transaction when a prime-time cancellation issues
-    // a waitlist hold; the offer email goes out only after the txn commits.
-    interface HoldOffer {
-      to: string; firstName: string; courtName: string;
-      startTime: Date; token: string; expiresAt: Date;
+    const role    = req.user!.role;
+    const isStaff = role === 'owner' || role === 'receptionist';
+
+    // Staff/owner cancellations MUST carry a written reason for the audit trail.
+    if (isStaff && !reason?.trim()) {
+      throw new ValidationError('A cancellation reason is required when staff cancel a booking');
     }
-    let holdOffer: HoldOffer | null = null;
 
-    // Cancellation email is dispatched after commit (like the waitlist offer)
-    // so an SMTP stall cannot hold the pooled DB connection open.
-    interface CancelNotify {
-      to: string; firstName: string; bookingId: string;
-      startTime: Date; refundStatus: string;
-    }
-    let cancelNotify: CancelNotify | null = null;
-
-    await withTransaction(async (client) => {
-      const { rows } = await client.query<{
-        id: string; status: string; customer_id: string; start_time: Date;
-        end_time: Date; court_id: string;
-      }>(
-        `SELECT id,status,customer_id,start_time,end_time,court_id FROM bookings WHERE id=$1 AND club_id=$2 FOR UPDATE`,
-        [req.params.id, clubIdOf(req)]
-      );
-      if (!rows.length) throw new NotFoundError('Booking', req.params.id);
-      const booking = rows[0];
-
-      // Customers can only cancel their own bookings
-      if (req.user!.role === 'customer' && booking.customer_id !== req.user!.sub) {
-        throw new ForbiddenError('You can only cancel your own bookings');
-      }
-
-      const TERMINAL = ['cancelled', 'completed', 'no_show', 'expired'];
-      if (TERMINAL.includes(booking.status)) {
-        throw new ValidationError(`Cannot cancel a booking in '${booking.status}' status`);
-      }
-
-      // Cancellation policy: check deadline
-      const { rows: clubRows } = await client.query<{ cancellation_deadline_hours: number }>(
-        `SELECT cancellation_deadline_hours FROM clubs WHERE id=$1`, [clubIdOf(req)]
-      );
-      const deadlineHours = clubRows[0]?.cancellation_deadline_hours ?? 24;
-      const deadline = new Date(booking.start_time.getTime() - deadlineHours * 60 * 60 * 1000);
-      const afterDeadline = new Date() > deadline;
-
-      await client.query(
-        `UPDATE bookings SET status='cancelled', cancellation_reason=$2, cancelled_at=NOW(), updated_at=NOW() WHERE id=$1`,
-        [booking.id, reason ?? null]
-      );
-
-      // ── ANTI-SCALPING interceptor ─────────────────────────────────────
-      // A cancelled prime-time slot must not drop straight into the public
-      // pool where a scraping bot re-books it instantly. Instead, the top
-      // (FIFO) matching waitlist entry gets an exclusive hold: a single-use
-      // claim token (only its SHA-256 stored) valid for a short window.
-      // create-booking rejects everyone else for that slot until the hold
-      // expires; the token holder claims it via the normal booking flow.
-      const slotIsUpcoming = new Date(booking.start_time).getTime() > Date.now();
-      if (slotIsUpcoming && isPrimeTime(new Date(booking.start_time))) {
-        const { rows: topEntry } = await client.query<{
-          id: string; user_id: string; email: string; first_name: string;
-        }>(
-          `SELECT w.id, w.user_id, u.email, u.first_name
-           FROM waitlist_entries w
-           JOIN users u ON u.id = w.user_id
-           WHERE w.club_id = $1
-             AND w.fulfilled_at IS NULL
-             AND (w.court_id IS NULL OR w.court_id = $2)
-             AND w.desired_start < $4::timestamptz
-             AND w.desired_end   > $3::timestamptz
-             AND w.user_id <> $5              -- the canceller can't waitlist-snipe their own slot
-           ORDER BY w.created_at
-           LIMIT 1
-           FOR UPDATE SKIP LOCKED`,
-          [clubIdOf(req), booking.court_id, booking.start_time, booking.end_time, booking.customer_id]
-        );
-
-        if (topEntry.length) {
-          const entry     = topEntry[0];
-          const token     = randomBytes(24).toString('hex');
-          const tokenHash = createHash('sha256').update(token).digest('hex');
-          const expiresAt = new Date(Date.now() + WAITLIST_HOLD_MINUTES * 60 * 1000);
-
-          const { rows: holdRows } = await client.query<{ id: string }>(
-            `INSERT INTO slot_holds (club_id, court_id, user_id, start_time, end_time, token_hash, expires_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-            [clubIdOf(req), booking.court_id, entry.user_id, booking.start_time, booking.end_time, tokenHash, expiresAt]
-          );
-          await client.query(
-            `UPDATE waitlist_entries SET fulfilled_at = NOW() WHERE id = $1`,
-            [entry.id]
-          );
-
-          await auditLogStrict(client, {
-            clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
-            ipAddress: req.ip, actionType: AUDIT_ACTIONS.SLOT_HOLD_CREATED,
-            entityType: 'slot_hold', entityId: holdRows[0].id,
-            newValues: {
-              waitlistEntryId: entry.id, heldFor: entry.user_id,
-              courtId: booking.court_id, startTime: booking.start_time,
-              expiresAt: expiresAt.toISOString(), cancelledBookingId: booking.id,
-            },
-            reason: 'Prime-time cancellation routed to the waitlist instead of the public pool',
-          });
-
-          const { rows: courtRows } = await client.query<{ name: string }>(
-            `SELECT name FROM courts WHERE id = $1`, [booking.court_id]
-          );
-          holdOffer = {
-            to: entry.email, firstName: entry.first_name,
-            courtName: courtRows[0]?.name ?? 'Court',
-            startTime: new Date(booking.start_time), token, expiresAt,
-          };
-        }
-      }
-
-      // Load customer email
-      const { rows: custRows } = await client.query<{ email: string; first_name: string }>(
-        `SELECT email, first_name FROM users WHERE id=$1`, [booking.customer_id]
-      );
-
-      await auditLogStrict(client, { clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
-        ipAddress: req.ip, actionType: AUDIT_ACTIONS.BOOKING_CANCELLED,
-        entityType: 'booking', entityId: booking.id,
-        newValues: { status: 'cancelled', reason, afterDeadline } });
-
-      if (custRows.length) {
-        cancelNotify = {
-          to: custRows[0].email, firstName: custRows[0].first_name,
-          bookingId: booking.id, startTime: booking.start_time,
-          refundStatus: afterDeadline ? 'Deposit forfeited (after cancellation deadline)' : 'Eligible for refund',
-        };
-      }
+    const result = await cancelBooking({
+      bookingId:      req.params.id,
+      clubId:         clubIdOf(req),
+      actorId:        req.user!.sub,
+      actorRole:      role as CancelActorRole,
+      reason:         reason?.trim() || undefined,
+      // The override is a staff privilege; never honour it for a customer caller.
+      refundOverride: isStaff ? refundOverride : undefined,
+      ipAddress:      req.ip,
+      deviceInfo:     req.headers['user-agent'],
     });
 
-    // Deliver the waitlist offer (with the raw token) only after the hold
-    // has durably committed — best-effort, like every other booking email.
-    const offer: HoldOffer | null = holdOffer;
-    if (offer) {
-      emailService.sendWaitlistSlotOffer(offer).catch(() => {
-        // logged inside the email service after its own retries
-      });
-    }
-
-    // Best-effort cancellation email — an SMTP outage must never roll back an
-    // already-committed cancellation.
-    const notify: CancelNotify | null = cancelNotify;
-    if (notify) {
-      emailService.sendBookingCancellation(notify).catch(() => {
-        // logged inside the email service after its own retries
-      });
-    }
-
-    res.json({ message: 'Booking cancelled successfully' });
+    res.json({ message: 'Booking cancelled successfully', ...result });
   } catch (err) { next(err); }
 }
 

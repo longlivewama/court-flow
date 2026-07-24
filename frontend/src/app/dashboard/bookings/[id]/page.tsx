@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { StateChip, BookingStatus } from '@/components/StateChip';
 import { ReceiptViewer } from '@/components/ReceiptViewer';
+import { CancelBookingButton } from '@/components/CancelBookingButton';
 
 const TIMEZONE = 'Africa/Cairo';
 
@@ -39,6 +40,9 @@ interface BookingDetails {
   court_number: number;
   payment_status: string;
   cancellation_reason?: string;
+  refund_status?: string | null;
+  refund_amount?: number | string | null;
+  cancelled_at?: string | null;
   created_at: string;
   // Phase 2 financial fields
   deposit_status: DepositStatus;
@@ -939,6 +943,17 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
           <StateChip status={booking.status} size="md" />
           <DepositStatusBadge status={depositStatus} />
+          <CancelBookingButton
+            bookingId={booking.id}
+            status={booking.status}
+            startTime={booking.start_time}
+            depositAmount={booking.deposit_amount}
+            depositMethod={booking.deposit_method}
+            remainderAmount={booking.remainder_amount}
+            remainderMethod={booking.remainder_method}
+            isStaff={isStaff}
+            onCancelled={refreshBooking}
+          />
         </div>
       </div>
 
@@ -1118,15 +1133,47 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
             </div>
           )}
 
-          <div style={{ marginTop: 20, padding: 16, background: 'var(--bg-secondary)', borderRadius: 8 }}>
-            <h3 style={{ fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: 8 }}>
-              Club Cancellation Policy
-            </h3>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
-              Cancellations made within 24 hours of the scheduled start time will result in forfeiture of the deposit.
-              Please contact the club for rescheduling.
-            </p>
-          </div>
+          {booking.status === 'cancelled' ? (
+            <div style={{ marginTop: 20, padding: 16, background: 'var(--bg-secondary)', borderRadius: 8, borderLeft: '3px solid var(--error, #ef4444)' }}>
+              <h3 style={{ fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: 10 }}>
+                Cancellation
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Refund status</span>
+                  <span style={{
+                    fontWeight: 600,
+                    color: booking.refund_status === 'REFUNDED' ? '#22c55e'
+                         : booking.refund_status === 'FORFEITED' ? '#f59e0b'
+                         : 'var(--text-tertiary)',
+                  }}>
+                    {booking.refund_status === 'REFUNDED' ? 'Refunded'
+                     : booking.refund_status === 'FORFEITED' ? 'Deposit forfeited'
+                     : booking.refund_status === 'PARTIAL' ? 'Partially refunded'
+                     : booking.refund_status === 'NOT_APPLICABLE' ? 'No payment collected'
+                     : '—'}
+                    {Number(booking.refund_amount) > 0 ? ` · EGP ${Number(booking.refund_amount).toFixed(0)}` : ''}
+                  </span>
+                </div>
+                {booking.cancellation_reason && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Reason</span>
+                    <span style={{ fontWeight: 500, textAlign: 'right' }}>{booking.cancellation_reason}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginTop: 20, padding: 16, background: 'var(--bg-secondary)', borderRadius: 8 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: 8 }}>
+                Club Cancellation Policy
+              </h3>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                Cancellations made within 24 hours of the scheduled start time will result in forfeiture of the deposit.
+                Please contact the club for rescheduling.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* ── Financial Settlement (Staff only) ─────────────────── */}
