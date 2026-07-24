@@ -10,7 +10,7 @@ import { auditLogStrict, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.
 import { emailService } from '../../infrastructure/email/email.service';
 import { whatsappService } from '../../infrastructure/whatsapp/whatsapp.service';
 import { sheetsService } from '../../infrastructure/sheets/sheets.service';
-import { NotFoundError, ForbiddenError } from '../../shared/errors';
+import { NotFoundError, ForbiddenError, ValidationError } from '../../shared/errors';
 import { logger } from '../../shared/logger';
 
 const TIMEZONE = 'Africa/Cairo';
@@ -69,12 +69,20 @@ export async function verifyDeposit(input: VerifyDepositInput): Promise<void> {
       );
     }
 
-    // Load payment
+    // Load payment. A booking can legitimately sit in 'pending_verification'
+    // with NO payment row (e.g. a stale/orphaned walk-in the customer never
+    // paid a deposit for). Approving/rejecting such a record is meaningless —
+    // there is nothing to verify. Return a clean 400 with an actionable
+    // message instead of an opaque 404 that reads as a broken endpoint.
     const { rows: paymentRows } = await client.query<{ id: string }>(
       `SELECT id FROM payments WHERE booking_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [input.bookingId]
     );
-    if (!paymentRows.length) throw new NotFoundError('Payment');
+    if (!paymentRows.length) {
+      throw new ValidationError(
+        'This booking has no payment/receipt on file, so its deposit cannot be verified. Ask the customer to upload a deposit receipt, or delete the stale booking.'
+      );
+    }
     const paymentId = paymentRows[0].id;
 
     // Load customer contact details for notification
