@@ -34,9 +34,14 @@ interface Financials {
   totals: {
     revenue: {
       bookings: number; tournaments: number; training: number; total: number;
+      forfeitedDeposits?: number;
       rentalsWithinBookings: number; rentalsPreviousPeriod: number;
     };
     costs: { operatingExpenses: number; coachPayouts: number; total: number };
+    cancellations?: {
+      forfeitedIncome: number; refundsOut: number;
+      forfeitCount: number; refundCount: number; netImpact: number;
+    };
     trainingClubShare: number;
     tournamentOutstanding: number;
     netProfit: number;
@@ -321,6 +326,9 @@ export default function FinancePage() {
                 { label: 'Court bookings',   value: t.revenue.bookings,    sub: `incl. ${egp(t.revenue.rentalsWithinBookings)} equipment rentals` },
                 { label: 'Tournament fees',  value: t.revenue.tournaments, sub: `${egp(t.tournamentOutstanding)} still outstanding` },
                 { label: 'Training sessions',value: t.revenue.training,    sub: `${egp(t.trainingClubShare)} club share after coach cuts` },
+                ...((t.revenue.forfeitedDeposits ?? 0) > 0
+                  ? [{ label: 'Forfeited deposits', value: t.revenue.forfeitedDeposits!, sub: `${t.cancellations?.forfeitCount ?? 0} late cancellation(s) retained` }]
+                  : []),
               ].map((row) => (
                 <div key={row.label} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
                   <div className="price-row" style={{ padding: 0 }}>
@@ -330,6 +338,17 @@ export default function FinancePage() {
                   <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 2 }}>{row.sub}</div>
                 </div>
               ))}
+              {(t.cancellations?.refundsOut ?? 0) > 0 && (
+                <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div className="price-row" style={{ padding: 0 }}>
+                    <span>Refunds paid out</span>
+                    <strong style={{ color: COST_ORANGE }}>− {egp(t.cancellations!.refundsOut)}</strong>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    {t.cancellations!.refundCount} cancellation refund(s) · already excluded from revenue above
+                  </div>
+                </div>
+              )}
               <div className="price-row total">
                 <span>Total collected</span>
                 <strong style={{ color: 'var(--accent-green-text)' }}>{egp(t.revenue.total)}</strong>

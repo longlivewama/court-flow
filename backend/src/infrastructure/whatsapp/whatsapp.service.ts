@@ -31,6 +31,15 @@ export interface OwnerConfirmedClientData {
   timeslot: string;
 }
 
+export interface CancellationClientData {
+  phone:        string;
+  name:         string;
+  courtName:    string;
+  timeslot:     string;
+  /** Human-readable refund outcome, e.g. "Refunded", "Deposit forfeited". */
+  refundLine:   string;
+}
+
 interface GraphError {
   message: string;
   type: string;
@@ -58,6 +67,26 @@ function normalizePhone(raw: string): string | null {
   const cc = process.env.WHATSAPP_DEFAULT_COUNTRY_CODE ?? '20';
   const normalized = digits.startsWith('0') ? cc + digits.slice(1) : digits;
   return normalized.length >= 10 && normalized.length <= 15 ? normalized : null;
+}
+
+function buildCancellationBody(opts: {
+  clubName: string; name: string; courtName: string; timeslot: string;
+  bookingRef: string; refundLine: string;
+}): string {
+  return [
+    `🏆 *${opts.clubName}* — Booking Cancelled`,
+    '',
+    `Dear ${opts.name}, your reservation has been cancelled.`,
+    '',
+    `📍 *Court:* ${opts.courtName}`,
+    `🗓 *Session:* ${opts.timeslot}`,
+    `🔖 *Booking Ref:* ${opts.bookingRef}`,
+    `💳 *${opts.refundLine}*`,
+    '',
+    'The court slot is now released. You can rebook anytime from the app.',
+    '',
+    '_Thank you for letting us know._',
+  ].join('\n');
 }
 
 function buildConfirmationBody(opts: {
@@ -162,6 +191,47 @@ export const whatsappService = {
     }));
 
     logger.info({ bookingId, clubId }, 'Owner-confirmed booking dispatched via WhatsApp');
+    return true;
+  },
+
+  /**
+   * Best-effort cancellation alert to the member. Dispatched AFTER the
+   * cancellation transaction commits (never inside it) so a Graph API stall
+   * cannot pin a pooled DB connection or roll back an already-cancelled
+   * booking. Returns true when the message was actually sent.
+   */
+  async sendBookingCancelled(
+    clubId: string,
+    bookingId: string,
+    clientData: CancellationClientData
+  ): Promise<boolean> {
+    if (!isConfigured()) {
+      logger.warn({ bookingId }, 'WhatsApp not configured; skipping cancellation dispatch');
+      return false;
+    }
+
+    const to = normalizePhone(clientData.phone);
+    if (!to) {
+      logger.warn({ bookingId }, 'Member has no valid WhatsApp number on file; skipping cancellation dispatch');
+      return false;
+    }
+
+    const clubs = await query<{ name: string }>(
+      `SELECT name FROM clubs WHERE id = $1`,
+      [clubId]
+    );
+    const clubName = clubs[0]?.name ?? 'CourtFlow';
+
+    await postWithRetry(to, buildCancellationBody({
+      clubName,
+      name: clientData.name,
+      courtName: clientData.courtName,
+      timeslot: clientData.timeslot,
+      bookingRef: bookingId.slice(0, 8).toUpperCase(),
+      refundLine: clientData.refundLine,
+    }));
+
+    logger.info({ bookingId, clubId }, 'Booking cancellation dispatched via WhatsApp');
     return true;
   },
 };
