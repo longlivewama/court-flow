@@ -77,7 +77,9 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
               COALESCE(u.last_name, 'User') AS last_name,
               COALESCE(u.email, '') AS customer_email,
               u.phone AS customer_phone,
+              p.id AS payment_id,
               p.status AS payment_status, p.deposit_amount, p.total_amount,
+              EXISTS (SELECT 1 FROM receipts r WHERE r.booking_id = b.id) AS has_receipt,
               (SELECT COALESCE(SUM(be.quantity), 0)::int
                  FROM booking_equipment be WHERE be.booking_id = b.id) AS equipment_items
        FROM bookings b
