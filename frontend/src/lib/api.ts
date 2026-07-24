@@ -44,19 +44,28 @@ function processQueue(error: unknown, token: string | null) {
   failedQueue = [];
 }
 
+// Auth endpoints whose OWN 401 must never trigger a token refresh. A failed
+// login ("Invalid email or password") or a dead refresh cookie is a terminal
+// answer, not an expired-token signal — trying to refresh here both spins
+// pointlessly and, worse, replaces the real error the user needs to see
+// (e.g. surfacing "No refresh token" instead of "Invalid email or password").
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/refresh', '/auth/register', '/auth/logout'];
+
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
     const status = error.response?.status;
+    const isAuthEndpoint = NO_REFRESH_PATHS.some((p) => (originalRequest?.url ?? '').includes(p));
 
     // Only 401 is refreshable. A 401 means the access token is missing/expired/
     // invalid, which a refresh can fix. A 403 means the session is valid but the
     // role is not permitted for this route (e.g. a non-staff user hitting
     // /bookings/:id/verify) — refreshing the token cannot change the role, so
     // retrying would spin forever. Reject 403s immediately and let the caller
-    // surface the permission error.
-    if (status === 401 && !originalRequest._retry) {
+    // surface the permission error. Auth endpoints (login/refresh/…) are also
+    // excluded so their own 401 surfaces verbatim instead of being masked.
+    if (status === 401 && !originalRequest._retry && !isAuthEndpoint) {
       if (isRefreshing) {
         return new Promise<string>((resolve, reject) => {
           failedQueue.push({ resolve, reject });
