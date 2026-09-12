@@ -7,6 +7,7 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
 import {
   verifyAccessToken,
   JwtPayload,
@@ -87,6 +88,11 @@ export function requireRole(...roles: string[]) {
 }
 
 // ── Rate Limiter Factory ─────────────────────────────────────
+// Backed by Redis (not the in-memory default) so limits are enforced across
+// every replica/process sharing this Redis instance instead of resetting per
+// process — a multi-replica deployment with an in-memory store lets an
+// attacker multiply their effective quota by the number of API instances.
+// Reuses the same ioredis connection as token revocation.
 export function rateLimiter(
   maxRequests: number,
   windowMs: number = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000', 10)
@@ -96,6 +102,18 @@ export function rateLimiter(
     max: maxRequests,
     standardHeaders: true,
     legacyHeaders: false,
+    store: new RedisStore({
+      sendCommand: (...args: string[]) =>
+        (redis.call as (...cmd: string[]) => Promise<unknown>)(...args) as Promise<
+          string | number | boolean | (string | number | boolean)[]
+        >,
+      prefix: 'rl:',
+    }),
+    // Fail OPEN on a Redis outage — same philosophy as the revocation check
+    // in authenticate() below. Rate limiting is a defense-in-depth control;
+    // treating a Redis blip as "reject every request" would take the whole
+    // API down for a much smaller problem than the one it's guarding against.
+    passOnStoreError: true,
     handler: (_req, _res, next) => {
       next(new (require('../../../shared/errors').RateLimitError)());
     },
@@ -108,3 +126,7 @@ export const loginLimiter      = rateLimiter(parseInt(process.env.RATE_LIMIT_LOG
 export const registerLimiter   = rateLimiter(parseInt(process.env.RATE_LIMIT_REGISTER   ?? '5',  10));
 export const passwordLimiter   = rateLimiter(parseInt(process.env.RATE_LIMIT_PASSWORD_RESET ?? '5', 10));
 export const uploadLimiter     = rateLimiter(parseInt(process.env.RATE_LIMIT_UPLOAD     ?? '20', 10));
+// Phase 2 item 10: endpoints that previously shipped with no rate limit at all.
+export const refreshLimiter     = rateLimiter(parseInt(process.env.RATE_LIMIT_REFRESH      ?? '30', 10));
+export const verifyEmailLimiter = rateLimiter(parseInt(process.env.RATE_LIMIT_VERIFY_EMAIL ?? '10', 10));
+export const webhookLimiter     = rateLimiter(parseInt(process.env.RATE_LIMIT_WEBHOOK       ?? '60', 10));

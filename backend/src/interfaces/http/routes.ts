@@ -3,7 +3,11 @@
  * Maps all HTTP routes to controllers with RBAC middleware.
  */
 import { Express, Router } from 'express';
-import { authenticate, requireRole, loginLimiter, registerLimiter, passwordLimiter, uploadLimiter } from './middleware/auth.middleware';
+import {
+  authenticate, requireRole,
+  loginLimiter, registerLimiter, passwordLimiter, uploadLimiter,
+  refreshLimiter, verifyEmailLimiter, webhookLimiter,
+} from './middleware/auth.middleware';
 import { requireTenant, requireClubResource, requirePermission } from './middleware/tenant.middleware';
 
 // Controllers
@@ -33,9 +37,9 @@ export function registerRoutes(app: Express): void {
   const auth = Router();
   auth.post('/register',      registerLimiter, authCtrl.register);
   auth.post('/register-club', registerLimiter, authCtrl.registerClub);
-  auth.post('/verify-email',  authCtrl.verifyEmail);
+  auth.post('/verify-email',  verifyEmailLimiter, authCtrl.verifyEmail);
   auth.post('/login',         loginLimiter, authCtrl.login);
-  auth.post('/refresh',       authCtrl.refresh);
+  auth.post('/refresh',       refreshLimiter, authCtrl.refresh);
   auth.post('/logout',        authenticate, authCtrl.logout);
   app.use('/api/auth', auth);
 
@@ -74,9 +78,11 @@ export function registerRoutes(app: Express): void {
 
   // ── Payment gateway webhook ───────────────────────────────────
   // Unauthenticated by design (the gateway has no user session); secured by
-  // HMAC signature + replay window + idempotency inside the handler. Must be
+  // HMAC signature + replay window + idempotency inside the handler, plus a
+  // Redis-backed rate limit here so a flood of forged/garbage deliveries
+  // can't be used to hammer the signature-check + DB path. Must be
   // registered BEFORE the authenticated /api/payments router below.
-  app.post('/api/payments/webhook', webhookCtrl.handlePaymentWebhook);
+  app.post('/api/payments/webhook', webhookLimiter, webhookCtrl.handlePaymentWebhook);
 
   // ── Payments ledger ───────────────────────────────────────────
   const payments = Router();
@@ -116,7 +122,7 @@ export function registerRoutes(app: Express): void {
   tournaments.get('/:id',                 requireClubResource('tournaments'), tournamentCtrl.getTournament);
   tournaments.patch('/:id',               requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.updateTournament);
   tournaments.post('/:id/teams',          requireRole('customer', 'receptionist', 'owner'), requireClubResource('tournaments'), tournamentCtrl.registerTeam);
-  tournaments.post('/:id/teams/:teamId/pay', requireRole('customer', 'receptionist', 'owner'), requireClubResource('tournaments'), tournamentCtrl.recordTeamPayment);
+  tournaments.post('/:id/teams/:teamId/pay', requireRole('receptionist', 'owner'), requireClubResource('tournaments'), tournamentCtrl.recordTeamPayment);
   tournaments.post('/:id/bracket',        requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.generateBracket);
   tournaments.patch('/:id/matches/:matchId', requireRole('owner'), requireClubResource('tournaments'), tournamentCtrl.recordMatchResult);
   app.use('/api/tournaments', tournaments);

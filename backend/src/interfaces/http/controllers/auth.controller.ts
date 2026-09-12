@@ -285,7 +285,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 
     const params: unknown[] = [email];
     if (clubSlug) params.push(clubSlug);
-    const { rows } = await db.query<{
+    const { rows: candidates } = await db.query<{
       id: string; club_id: string; club_slug: string; club_active: boolean;
       password_hash: string; role: string; first_name: string;
       email_verified: boolean; is_active: boolean; failed_login_attempts: number; locked_until: Date | null;
@@ -301,18 +301,39 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 
     // Generic error to prevent user enumeration
     const invalidCreds = new UnauthorizedError('Invalid email or password');
-    if (!rows.length) throw invalidCreds;
 
-    // Same email in several club workspaces — require the slug to pick one.
-    // The slugs themselves are never disclosed pre-authentication.
-    if (rows.length > 1) {
-      throw new ValidationError(
-        'This email belongs to multiple club workspaces. Add your club slug to continue.',
-        { code: 'CLUB_SLUG_REQUIRED' }
-      );
+    let user: (typeof candidates)[number];
+    let passwordAlreadyVerified = false;
+
+    if (candidates.length <= 1) {
+      // Deterministic: a slug pinned exactly one row, or this email is
+      // unique to a single club workspace either way.
+      if (!candidates.length) throw invalidCreds;
+      user = candidates[0];
+    } else {
+      // The same email exists in several club workspaces and no slug was
+      // given. Whether that's true must NEVER be disclosed to a caller who
+      // hasn't first proven they know a valid password — doing so from the
+      // email alone (the original bug) turns this endpoint into an oracle
+      // for "which emails are registered in more than one club". Only once
+      // the presented password checks out against one (or more) of these
+      // accounts do we reveal anything beyond the generic invalid-credentials
+      // error — at that point the caller already knows the account exists.
+      const matches: typeof candidates = [];
+      for (const candidate of candidates) {
+        if (await verifyPassword(password, candidate.password_hash)) matches.push(candidate);
+      }
+      if (!matches.length) throw invalidCreds;
+      if (matches.length > 1) {
+        throw new ValidationError(
+          'This email belongs to multiple club workspaces. Add your club slug to continue.',
+          { code: 'CLUB_SLUG_REQUIRED' }
+        );
+      }
+      user = matches[0];
+      passwordAlreadyVerified = true;
     }
 
-    const user = rows[0];
     if (!user.club_active) throw new UnauthorizedError('This club workspace is suspended');
     if (!user.is_active) throw new UnauthorizedError('Account is deactivated');
     if (isProduction && !user.email_verified) throw new UnauthorizedError('Please verify your email before logging in');
@@ -325,20 +346,22 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       throw new UnauthorizedError(`Account is temporarily locked. Try again after ${user.locked_until.toISOString()}`);
     }
 
-    const valid = await verifyPassword(password, user.password_hash);
-    if (!valid) {
-      const attempts = user.failed_login_attempts + 1;
-      const lockedUntil = attempts >= LOCKOUT_ATTEMPTS
-        ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
-        : null;
+    if (!passwordAlreadyVerified) {
+      const valid = await verifyPassword(password, user.password_hash);
+      if (!valid) {
+        const attempts = user.failed_login_attempts + 1;
+        const lockedUntil = attempts >= LOCKOUT_ATTEMPTS
+          ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
+          : null;
 
-      await db.query(
-        `UPDATE users SET failed_login_attempts=$1, locked_until=$2 WHERE id=$3`,
-        [attempts, lockedUntil, user.id]
-      );
-      await auditLog({ clubId: user.club_id, userId: user.id, userRole: user.role,
-        ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGIN_FAILED, entityType: 'user', entityId: user.id });
-      throw invalidCreds;
+        await db.query(
+          `UPDATE users SET failed_login_attempts=$1, locked_until=$2 WHERE id=$3`,
+          [attempts, lockedUntil, user.id]
+        );
+        await auditLog({ clubId: user.club_id, userId: user.id, userRole: user.role,
+          ipAddress: req.ip, actionType: AUDIT_ACTIONS.USER_LOGIN_FAILED, entityType: 'user', entityId: user.id });
+        throw invalidCreds;
+      }
     }
 
     // Reset failed attempts on success
@@ -357,11 +380,17 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       [user.id, refreshHash, req.ip, req.headers['user-agent'], refreshExpiry.toISOString()]
     );
 
-    // Set refresh token in HttpOnly, Secure, SameSite=Strict cookie
+    // Refresh token cookie: HttpOnly + SameSite=Lax. Lax (not Strict) so the
+    // cookie is delivered reliably on the silent refresh that fires after a
+    // hard reload / direct-URL navigation — Strict can withhold it in some
+    // browser navigation contexts, surfacing as a spurious "No refresh token".
+    // CSRF is still covered: the refresh route is a POST (Lax never sends the
+    // cookie on a cross-site POST) and the new access token is returned in the
+    // response body, which cross-site JS cannot read.
     res.cookie('courtflow_refresh', refreshToken, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge:   7 * 24 * 60 * 60 * 1000,
       path:     '/api/auth/refresh',
     });
@@ -380,27 +409,101 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 }
 
 // ── POST /api/auth/refresh ────────────────────────────────────
+// Refresh Token Rotation (RTR): every successful refresh issues a brand-new
+// refresh token and revokes the one just presented, so a stolen-but-unused
+// refresh token is only ever usable once. Reuse detection: if the presented
+// token is one that has ALREADY been rotated out (revoked_at is set), that
+// can only mean it was stolen and used after the legitimate client already
+// rotated past it — treat the whole session family as compromised and
+// revoke every active refresh token for the user immediately.
 export async function refresh(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const refreshToken = req.cookies?.courtflow_refresh;
     if (!refreshToken) throw new UnauthorizedError('No refresh token');
 
     const payload = verifyRefreshToken(refreshToken);
-
-    // Check DB for active refresh token
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    const { rows } = await db.query<{ id: string; revoked_at: Date | null }>(
-      `SELECT id, revoked_at FROM refresh_tokens WHERE token_hash=$1 AND user_id=$2`,
-      [tokenHash, payload.sub]
-    );
-    if (!rows.length || rows[0].revoked_at) throw new UnauthorizedError('Refresh token revoked');
 
-    // Issue new access token
-    const newAccessToken = signAccessToken({
-      sub: payload.sub, email: payload.email, role: payload.role, clubId: payload.clubId,
+    // IMPORTANT: on reuse detection, the mass-revocation UPDATE below must be
+    // allowed to COMMIT even though the request ultimately fails. Throwing
+    // from inside withTransaction's callback rolls back everything done on
+    // `client` in this transaction — including that revocation — which would
+    // silently turn "revoke every session" into a no-op while still telling
+    // the caller (and the audit log) that it happened. So every path returns
+    // a result instead of throwing inside the transaction; the actual 401 is
+    // thrown afterwards, once any necessary writes are already durable.
+    type RefreshOutcome =
+      | { kind: 'rotated'; newAccessToken: string; newRefreshToken: string }
+      | { kind: 'reused' }
+      | { kind: 'invalid' };
+
+    const outcome = await withTransaction<RefreshOutcome>(async (client) => {
+      // Lock the presented token's row so a concurrent refresh with the same
+      // token can't both pass the revoked_at check before either rotates it.
+      const { rows } = await client.query<{ id: string; user_id: string; revoked_at: Date | null; expires_at: Date }>(
+        `SELECT id, user_id, revoked_at, expires_at FROM refresh_tokens WHERE token_hash=$1 AND user_id=$2 FOR UPDATE`,
+        [tokenHash, payload.sub]
+      );
+
+      if (!rows.length) return { kind: 'invalid' };
+      const stored = rows[0];
+
+      if (stored.revoked_at) {
+        // Reuse of an already-rotated-out token: possible theft. Nuke every
+        // active session for this user rather than trusting this one back in.
+        await client.query(
+          `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+          [payload.sub]
+        );
+        return { kind: 'reused' };
+      }
+      if (stored.expires_at < new Date()) return { kind: 'invalid' };
+
+      // Rotate: revoke the presented token and mint a fresh one atomically.
+      await client.query(`UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1`, [stored.id]);
+
+      const tokenPayload = { sub: payload.sub, email: payload.email, role: payload.role, clubId: payload.clubId };
+      const newAccessToken = signAccessToken(tokenPayload);
+      const { token: newRefreshToken } = signRefreshToken(tokenPayload);
+
+      const newRefreshHash = crypto.createHash('sha256').update(newRefreshToken).digest('hex');
+      const newRefreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await client.query(
+        `INSERT INTO refresh_tokens (user_id,token_hash,ip_address,device_info,expires_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [payload.sub, newRefreshHash, req.ip, req.headers['user-agent'], newRefreshExpiry.toISOString()]
+      );
+
+      return { kind: 'rotated', newAccessToken, newRefreshToken };
     });
 
-    res.json({ accessToken: newAccessToken });
+    if (outcome.kind === 'reused') {
+      await auditLog({
+        clubId: payload.clubId, userId: payload.sub, userRole: payload.role,
+        ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
+        actionType: AUDIT_ACTIONS.TOKEN_REVOKED, entityType: 'user', entityId: payload.sub,
+        reason: 'Refresh token reuse detected — all active sessions revoked as a suspected compromise',
+      });
+      throw new UnauthorizedError('Refresh token revoked');
+    }
+    if (outcome.kind === 'invalid') {
+      throw new UnauthorizedError('Refresh token revoked');
+    }
+
+    // Same cookie contract as login() — HttpOnly + SameSite=Lax (not Strict:
+    // Strict can withhold the cookie on the silent refresh that fires after a
+    // hard reload / direct-URL navigation, which is the exact bug fixed by
+    // making the login cookie Lax; a rotated cookie issued here must keep the
+    // same semantics or that fix regresses on the very next refresh cycle).
+    res.cookie('courtflow_refresh', outcome.newRefreshToken, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge:   7 * 24 * 60 * 60 * 1000,
+      path:     '/api/auth/refresh',
+    });
+
+    res.json({ accessToken: outcome.newAccessToken });
   } catch (err) { next(err); }
 }
 
@@ -468,6 +571,13 @@ export async function listCustomers(
         LIMIT 200`,
       params
     );
+
+    await auditLog({
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.CUSTOMER_PII_EXPORTED,
+      entityType: 'user', entityId: req.user!.sub,
+      newValues: { resultCount: rows.length, search: search ?? null },
+    });
 
     res.json({ data: rows });
   } catch (err) { next(err); }

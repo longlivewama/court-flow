@@ -50,6 +50,20 @@ export async function createSubscriptionHandler(req: Request, res: Response, nex
       ? userId
       : (parsed.customerId ?? parsed.customer_id ?? userId);
 
+    // IDOR guard: a staff member subscribing on behalf of an explicit
+    // customerId must only ever target a member of their own club — a
+    // subscription mints several confirmed, club-billed bookings at once, so
+    // this cannot be left to the use case's role check alone.
+    if (role !== 'customer' && (parsed.customerId ?? parsed.customer_id)) {
+      const { rows: custRows } = await db.query(
+        `SELECT 1 FROM users WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
+        [customerId, clubIdOf(req)]
+      );
+      if (!custRows.length) {
+        throw new ValidationError('Customer not found in this club', { code: 'CUSTOMER_NOT_FOUND_IN_CLUB' });
+      }
+    }
+
     const result = await createSubscription({
       clubId:          clubIdOf(req),
       courtId,

@@ -32,6 +32,11 @@ function makeClient() {
   const calls: RecordedCall[] = [];
   const query = jest.fn(async (text: string, params: unknown[] = []) => {
     calls.push({ text, params });
+    // IDOR guard (PHASE 1 item 3): the target customer must belong to the
+    // subscription's club. The fixture customer ('cust-1') always does.
+    if (/FROM\s+users\s+WHERE\s+id\s*=\s*\$1\s+AND\s+club_id\s*=\s*\$2/i.test(text)) {
+      return { rows: [{ id: 'cust-1' }] };
+    }
     if (/INSERT INTO subscriptions/i.test(text)) return { rows: [{ id: 'sub-1' }] };
     if (/INSERT INTO bookings/i.test(text)) return { rows: [{ id: `bk-${calls.length}` }] };
     if (/INSERT INTO payments/i.test(text)) return { rows: [] };

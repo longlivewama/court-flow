@@ -37,10 +37,34 @@ const app = express();
 app.set('trust proxy', 1);
 
 // ── Security headers ──────────────────────────────────────────
+// This process only ever serves JSON and a handful of binary downloads
+// (receipts, lost & found photos, generated reports) — it never renders HTML
+// that legitimately needs to load a script, stylesheet, or sub-resource, so
+// the strictest possible policy (nothing allowed) is both safe and correct
+// here. It also closes off Express's default HTML 404 page, which would
+// otherwise be the one response from this service capable of being
+// (mis)rendered as a document. The actual frontend (Next.js, served
+// separately behind nginx) sets its own per-request, nonce-based CSP —
+// see frontend/src/middleware.ts — since a static policy here would
+// conflict with that nonce for the pages nginx proxies to it.
 app.use(
   helmet({
     hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
-    contentSecurityPolicy: false, // configured separately for API
+    contentSecurityPolicy: {
+      // useDefaults: false — otherwise helmet MERGES these directives with
+      // its own built-in defaults (script-src 'self', style-src 'self' https:
+      // 'unsafe-inline', img-src 'self' data:, etc.), silently reopening
+      // exactly what this policy is meant to close. Confirmed via a live
+      // request during the 2026-09-12 migration rollout: without this flag
+      // the emitted header carried seven extra directives never specified
+      // here.
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+      },
+    },
   })
 );
 

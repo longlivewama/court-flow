@@ -288,14 +288,21 @@ export async function registerTeam(req: Request, res: Response, next: NextFuncti
 
 const paySchema = z.object({
   amount: z.number().positive().optional(),          // staff may record partial payments
-  method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'ONLINE']).default('ONLINE'),
+  method: z.enum(['INSTAPAY', 'VODAFONE_CASH', 'CASH', 'ONLINE']).default('CASH'),
 });
 
-// ── POST /api/tournaments/:id/teams/:teamId/pay ───────────────
-// Customers settle their own team's remaining fee (online). Staff can record
-// cash / InstaPay payments (partial or full) for any team.
+// ── POST /api/tournaments/:id/teams/:teamId/pay (staff only) ──
+// Manual fee recording for cash / InstaPay / Vodafone Cash collected in
+// person by staff. Customers pay their own team's fee online through the
+// payment gateway; the gateway's webhook (payment-webhook.controller.ts)
+// credits the team automatically once it verifies the payment covers the
+// full remaining balance. A customer/captain token calling this endpoint
+// directly — bypassing real payment verification — is rejected outright.
 export async function recordTeamPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    if (!isStaff(req.user!.role)) {
+      throw new ForbiddenError('Only club staff can record a manual fee payment. Pay online instead.');
+    }
     const parsed = paySchema.parse(req.body);
 
     const { rows: teamRows } = await db.query(
@@ -308,19 +315,13 @@ export async function recordTeamPayment(req: Request, res: Response, next: NextF
     if (!teamRows.length) throw new NotFoundError('Team', req.params.teamId);
     const team = teamRows[0];
 
-    const staff = isStaff(req.user!.role);
-    if (!staff && team.captain_id !== req.user!.sub) {
-      throw new ForbiddenError('You can only pay for your own team');
-    }
-
     const due  = Number(team.amount_due);
     const paid = Number(team.amount_paid);
     const remaining = Math.max(due - paid, 0);
     if (remaining <= 0) throw new ConflictError('This team has already paid in full');
 
-    // Customers always settle the full remaining balance online
-    const amount = staff ? Math.min(parsed.amount ?? remaining, remaining) : remaining;
-    const method = staff ? parsed.method : 'ONLINE';
+    const amount = Math.min(parsed.amount ?? remaining, remaining);
+    const method = parsed.method;
 
     const { rows } = await db.query(
       `UPDATE tournament_teams

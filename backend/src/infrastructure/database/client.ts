@@ -12,13 +12,21 @@ function resolveSsl(connectionString?: string) {
   return process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false;
 }
 
-// ── Primary connection pool (full read-write access) ─────────
+// ── Primary connection pool (day-to-day app access) ───────────
+// DATABASE_URL_APP is the non-superuser `courtflow_app` role introduced in
+// migration 018 (see its header comment): it has full read-write access to
+// every table except audit_logs, where it can only SELECT — never
+// UPDATE/DELETE/TRUNCATE. Falls back to DATABASE_URL (the migrations/admin
+// role) when unset, so any environment that hasn't provisioned the new role
+// yet — or the migration runner itself — keeps working unchanged.
+const APP_DATABASE_URL = process.env.DATABASE_URL_APP ?? process.env.DATABASE_URL;
+
 export const db = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: APP_DATABASE_URL,
   max: 20,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
-  ssl: resolveSsl(process.env.DATABASE_URL),
+  ssl: resolveSsl(APP_DATABASE_URL),
 });
 
 db.on('error', (err) => {
