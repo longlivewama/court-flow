@@ -14,6 +14,10 @@ services:
       # audit_writer role off its migration placeholder. Must match the password
       # in the api service's DATABASE_URL_AUDIT below.
       AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-CHANGE_IN_PRODUCTION}
+      # Consumed by the zz_set_courtflow_app_password.sh init hook to rotate the
+      # courtflow_app role (migration 018) off its migration placeholder. Must
+      # match the password in the api service's DATABASE_URL_APP below.
+      COURTFLOW_APP_DB_PASSWORD: ${COURTFLOW_APP_DB_PASSWORD:-CHANGE_IN_PRODUCTION}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/migrations:/docker-entrypoint-initdb.d:ro
@@ -64,13 +68,24 @@ services:
       DATABASE_URL: postgresql://courtflow:${POSTGRES_PASSWORD:-courtflow_pass}@postgres:5432/courtflow
       # backend/.env points this at 127.0.0.1 (host-oriented); inside the container it must target the postgres service
       DATABASE_URL_AUDIT: postgresql://audit_writer:${AUDIT_DB_PASSWORD:-CHANGE_IN_PRODUCTION}@postgres:5432/courtflow?sslmode=disable
+      # Non-superuser role (migration 018) for the app's day-to-day queries —
+      # see client.ts. Keeps a compromised app process from being able to
+      # bypass audit_logs' row-level security the way the superuser
+      # `courtflow` connection above could.
+      DATABASE_URL_APP: postgresql://courtflow_app:${COURTFLOW_APP_DB_PASSWORD:-CHANGE_IN_PRODUCTION}@postgres:5432/courtflow?sslmode=disable
       REDIS_URL:    redis://:${REDIS_PASSWORD:-redis_pass}@redis:6379
       PORT:         4000
     volumes:
       - uploads:/app/uploads
       - ./backend/keys:/app/keys:ro
-    ports:
-      - "4000:4000"
+    # No host port publish: all external traffic must enter through nginx
+    # (ports 80/443 below). Publishing 4000 here would let anyone on the host
+    # network reach the API directly, bypassing nginx's TLS termination, rate
+    # limiting, and security headers entirely. `expose` keeps the port
+    # reachable to other containers on the compose network (nginx → api:4000)
+    # without binding it on the host.
+    expose:
+      - "4000"
 
   # ── Frontend ───────────────────────────────────────────────
   frontend:

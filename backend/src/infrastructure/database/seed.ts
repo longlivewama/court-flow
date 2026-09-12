@@ -34,7 +34,8 @@ export async function seedDefaultOwner(): Promise<void> {
   );
 
   logger.warn(
-    `[seed] Created default dev owner account — email: ${DEFAULT_OWNER_EMAIL}, password: ${DEFAULT_OWNER_PASSWORD}. ` +
+    `[seed] Created default dev owner account — email: ${DEFAULT_OWNER_EMAIL}. ` +
+    `Password is the DEFAULT_OWNER_PASSWORD constant in seed.ts (not logged). ` +
     `This only runs outside NODE_ENV=production.`
   );
 }

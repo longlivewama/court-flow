@@ -258,7 +258,24 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
     }
 
     if (!resolvedCustomerId) resolvedCustomerId = userId; // Fallback
-    
+
+    // IDOR guard: a staff member booking on behalf of an explicit customerId
+    // must only ever target a member of their own club. Without this check a
+    // receptionist token could pass any UUID and silently attach the booking
+    // (and its financial history) to a customer row from a different tenant.
+    // The walk-in phone-lookup path above is already club-scoped and the
+    // customer-self and fallback paths always resolve to the caller's own id,
+    // so this only needs to re-verify an explicit staff-supplied customerId.
+    if (role !== 'customer' && customerId) {
+      const { rows: custRows } = await db.query(
+        `SELECT 1 FROM users WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
+        [customerId, clubIdOf(req)]
+      );
+      if (!custRows.length) {
+        throw new ValidationError('Customer not found in this club', { code: 'CUSTOMER_NOT_FOUND_IN_CLUB' });
+      }
+    }
+
     // Discounts are a staff pricing lever. A customer must never be able to
     // discount their own booking (it reduces total_price and the required
     // deposit downstream), so force it to 0 regardless of the payload — the
@@ -427,6 +444,12 @@ export async function getReceiptHandler(req: Request, res: Response, next: NextF
       // File missing on disk or encrypted under a rotated/incorrect key
       throw new NotFoundError('Receipt file (unreadable or missing from storage)', id);
     }
+
+    await auditLog({
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.RECEIPT_VIEWED,
+      entityType: 'booking', entityId: id,
+    });
 
     res.setHeader('Content-Type', receipt.file_mime);
     res.setHeader('Content-Disposition', `inline; filename="${receipt.file_name.replace(/"/g, '')}"`);

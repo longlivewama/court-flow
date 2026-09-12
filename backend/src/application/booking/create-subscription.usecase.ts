@@ -77,6 +77,17 @@ export async function createSubscription(
   const occurrences = input.termMonths * WEEKS_PER_MONTH;
 
   return withTransaction(async (client: PoolClient) => {
+    // IDOR guard (defense in depth — also checked in subscription.controller.ts
+    // before this use case is ever called): the target customer must belong to
+    // the same club as the subscription being created, never trusted blind.
+    const { rows: custRows } = await client.query<{ id: string }>(
+      `SELECT id FROM users WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
+      [input.customerId, input.clubId]
+    );
+    if (!custRows.length) {
+      throw new ValidationError('Customer not found in this club', { code: 'CUSTOMER_NOT_FOUND_IN_CLUB' });
+    }
+
     // Pessimistic lock on the court serialises concurrent subscription and
     // booking creation, exactly like create-booking.usecase.ts.
     await client.query(`SELECT id FROM courts WHERE id = $1 FOR UPDATE`, [input.courtId]);

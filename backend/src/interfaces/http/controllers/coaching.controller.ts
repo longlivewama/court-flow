@@ -13,10 +13,10 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { db } from '../../../infrastructure/database/client';
+import { db, withTransaction } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
-import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
-import { NotFoundError, ValidationError } from '../../../shared/errors';
+import { auditLog, auditLogStrict, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
+import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
 
 
 // ═══ Coaches ══════════════════════════════════════════════════
@@ -331,41 +331,93 @@ export async function createSession(req: Request, res: Response, next: NextFunct
     const hours = (end.getTime() - start.getTime()) / 3_600_000;
     if (hours > 8) throw new ValidationError('Training sessions cannot exceed 8 hours');
 
-    const { rows: coachRows } = await db.query(
-      `SELECT * FROM coaches WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
-      [parsed.coachId, clubIdOf(req)]
-    );
-    if (!coachRows.length) throw new NotFoundError('Coach', parsed.coachId);
-    const coach = coachRows[0];
+    const clubId = clubIdOf(req);
+    const session = await withTransaction(async (client) => {
+      const { rows: coachRows } = await client.query(
+        `SELECT * FROM coaches WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
+        [parsed.coachId, clubId]
+      );
+      if (!coachRows.length) throw new NotFoundError('Coach', parsed.coachId);
+      const coach = coachRows[0];
 
-    const price = parsed.price ?? Math.round(Number(coach.hourly_rate) * hours * 100) / 100;
-    const pct   = parsed.commissionPct ?? Number(coach.commission_pct);
-    const coachShare = Math.round(price * pct) / 100;
-    const clubShare  = Math.round((price - coachShare) * 100) / 100;
+      if (parsed.courtId) {
+        // Lock the court row so a concurrent booking/training-session create
+        // on the same court can't both pass the conflict check before either
+        // commits (mirrors create-booking.usecase.ts's own court lock).
+        const { rows: courtRows } = await client.query(
+          `SELECT id FROM courts WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+          [parsed.courtId, clubId]
+        );
+        if (!courtRows.length) throw new NotFoundError('Court', parsed.courtId);
 
-    const { rows } = await db.query(
-      `INSERT INTO training_sessions
-         (club_id, coach_id, customer_id, customer_name, court_id,
-          start_time, end_time, price, coach_share, club_share, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       RETURNING *`,
-      [clubIdOf(req), parsed.coachId, parsed.customerId ?? null, parsed.customerName ?? null,
-       parsed.courtId ?? null, parsed.startTime, parsed.endTime,
-       price, coachShare, clubShare, parsed.notes ?? null, req.user!.sub]
-    );
+        // Blocked (maintenance / private event / etc.)
+        const { rows: blockedRows } = await client.query(
+          `SELECT id, title, type FROM blocked_periods
+           WHERE club_id = $1 AND (court_id IS NULL OR court_id = $2)
+             AND start_at < $4::timestamptz AND end_at > $3::timestamptz`,
+          [clubId, parsed.courtId, start.toISOString(), end.toISOString()]
+        );
+        if (blockedRows.length) {
+          throw new ConflictError(
+            `Court is blocked during this period: "${blockedRows[0].title}" (${blockedRows[0].type})`
+          );
+        }
 
-    await auditLog({
-      clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
-      ipAddress: req.ip, actionType: AUDIT_ACTIONS.TRAINING_SESSION_CREATED,
-      entityType: 'training_session', entityId: rows[0].id,
-      newValues: { coachId: parsed.coachId, price, coachShare, clubShare, startTime: parsed.startTime },
+        // Already reserved by a customer booking
+        const { rows: bookingConflicts } = await client.query(
+          `SELECT id FROM bookings
+           WHERE court_id = $1 AND deleted_at IS NULL
+             AND status IN ('draft','pending_deposit','pending_verification','confirmed','checked_in')
+             AND start_time < $3::timestamptz AND end_time > $2::timestamptz`,
+          [parsed.courtId, start.toISOString(), end.toISOString()]
+        );
+        if (bookingConflicts.length) {
+          throw new ConflictError('This court is already booked for part of this time window');
+        }
+
+        // Already allocated to another training session
+        const { rows: sessionConflicts } = await client.query(
+          `SELECT id FROM training_sessions
+           WHERE court_id = $1 AND status <> 'cancelled'
+             AND start_time < $3::timestamptz AND end_time > $2::timestamptz`,
+          [parsed.courtId, start.toISOString(), end.toISOString()]
+        );
+        if (sessionConflicts.length) {
+          throw new ConflictError('This court already has a training session scheduled during this time window');
+        }
+      }
+
+      const price = parsed.price ?? Math.round(Number(coach.hourly_rate) * hours * 100) / 100;
+      const pct   = parsed.commissionPct ?? Number(coach.commission_pct);
+      const coachShare = Math.round(price * pct) / 100;
+      const clubShare  = Math.round((price - coachShare) * 100) / 100;
+
+      const { rows } = await client.query(
+        `INSERT INTO training_sessions
+           (club_id, coach_id, customer_id, customer_name, court_id,
+            start_time, end_time, price, coach_share, club_share, notes, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         RETURNING *`,
+        [clubId, parsed.coachId, parsed.customerId ?? null, parsed.customerName ?? null,
+         parsed.courtId ?? null, parsed.startTime, parsed.endTime,
+         price, coachShare, clubShare, parsed.notes ?? null, req.user!.sub]
+      );
+
+      await auditLogStrict(client, {
+        clubId, userId: req.user!.sub, userRole: req.user!.role,
+        ipAddress: req.ip, actionType: AUDIT_ACTIONS.TRAINING_SESSION_CREATED,
+        entityType: 'training_session', entityId: rows[0].id,
+        newValues: { coachId: parsed.coachId, price, coachShare, clubShare, startTime: parsed.startTime },
+      });
+
+      return rows[0];
     });
 
     res.status(201).json({
-      ...rows[0],
-      price:       Number(rows[0].price),
-      coach_share: Number(rows[0].coach_share),
-      club_share:  Number(rows[0].club_share),
+      ...session,
+      price:       Number(session.price),
+      coach_share: Number(session.coach_share),
+      club_share:  Number(session.club_share),
     });
   } catch (err) { next(err); }
 }

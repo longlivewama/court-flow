@@ -30,6 +30,17 @@ export async function joinWaitlist(req: Request, res: Response, next: NextFuncti
     if (!(end > start))              throw new ValidationError('desiredEnd must be after desiredStart');
     if (start.getTime() < Date.now()) throw new ValidationError('The desired window must be in the future');
 
+    // IDOR guard: an explicit courtId must belong to this club. Without this
+    // check a customer could pass another tenant's court id and later have it
+    // silently matched against that foreign court when a slot opens up.
+    if (parsed.courtId) {
+      const { rows: courtRows } = await db.query(
+        `SELECT 1 FROM courts WHERE id = $1 AND club_id = $2 AND is_active = true`,
+        [parsed.courtId, clubIdOf(req)]
+      );
+      if (!courtRows.length) throw new NotFoundError('Court', parsed.courtId);
+    }
+
     const { rows } = await db.query(
       `INSERT INTO waitlist_entries (club_id, user_id, court_id, desired_start, desired_end)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,

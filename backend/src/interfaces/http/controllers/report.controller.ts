@@ -114,6 +114,14 @@ export async function downloadReport(req: Request, res: Response, next: NextFunc
     const { content, contentType, fileName } = await buildReport(
       clubIdOf(req), rows[0].type, rows[0].format, rows[0].filters ?? {}
     );
+
+    await auditLog({
+      clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
+      ipAddress: req.ip, actionType: AUDIT_ACTIONS.FINANCIAL_REPORT_DOWNLOADED,
+      entityType: 'report_job', entityId: req.params.id,
+      newValues: { type: rows[0].type, format: rows[0].format },
+    });
+
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(content);
