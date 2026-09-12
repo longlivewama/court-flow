@@ -19,11 +19,42 @@ import { NotFoundError, ValidationError, ConflictError } from '../../../shared/e
 
 
 const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: MAX_PHOTO_SIZE_BYTES },
 });
+
+/**
+ * Detect the true image type from the buffer's magic bytes. The client-declared
+ * MIME (multipart Content-Type) is fully attacker-controlled and must never be
+ * trusted on its own — a polyglot or script uploaded as `Content-Type: image/png`
+ * would otherwise pass straight through to storage and later be served back
+ * with that same (spoofed) Content-Type. Returns the detected MIME, or null if
+ * the bytes match none of the allowed signatures.
+ */
+function sniffMime(buf: Buffer): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  // RIFF....WEBP: bytes 0-3 'RIFF', bytes 8-11 'WEBP'
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
 
 export function photoUploadMiddleware(req: Request, res: Response, next: NextFunction): void {
   upload.single('photo')(req, res, (err: unknown) => {
@@ -106,8 +137,23 @@ export async function createItem(req: Request, res: Response, next: NextFunction
     };
     const parsed = itemSchema.parse(body);
 
-    if (req.file && !ALLOWED_MIMES.includes(req.file.mimetype)) {
-      throw new ValidationError('Photo must be a JPEG, PNG or WebP image');
+    // Content-based check: the client-declared Content-Type is attacker
+    // controlled, so verify the actual bytes match an allowed image signature
+    // and agree with what was declared. Defeats MIME spoofing (e.g. a script
+    // or polyglot uploaded as image/png). The DETECTED type — never the
+    // client-declared one — is what gets persisted and later served back.
+    let detectedMime: string | null = null;
+    if (req.file) {
+      if (!ALLOWED_MIMES.includes(req.file.mimetype)) {
+        throw new ValidationError('Photo must be a JPEG, PNG or WebP image');
+      }
+      if (req.file.size > MAX_PHOTO_SIZE_BYTES) {
+        throw new ValidationError('Photo exceeds the 5 MB limit');
+      }
+      detectedMime = sniffMime(req.file.buffer);
+      if (!detectedMime || !ALLOWED_MIMES.includes(detectedMime)) {
+        throw new ValidationError('Photo content does not match a genuine JPEG, PNG or WebP image');
+      }
     }
 
     const { rows } = await db.query(
@@ -117,7 +163,7 @@ export async function createItem(req: Request, res: Response, next: NextFunction
        RETURNING id, title, description, court_id, found_at, status, created_at,
                  (photo_data IS NOT NULL) AS has_photo`,
       [clubIdOf(req), parsed.title, parsed.description ?? null, parsed.courtId ?? null,
-       parsed.foundAt ?? null, req.file?.buffer ?? null, req.file?.mimetype ?? null, req.user!.sub]
+       parsed.foundAt ?? null, req.file?.buffer ?? null, detectedMime, req.user!.sub]
     );
 
     await auditLog({
