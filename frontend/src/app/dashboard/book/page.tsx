@@ -594,7 +594,7 @@ function BookCourtForm() {
                   className="input"
                   type="date"
                   value={date}
-                  min={format(new Date(), 'yyyy-MM-dd')}
+                  min={isStaff ? undefined : format(new Date(), 'yyyy-MM-dd')}
                   onChange={(e) => setDate(e.target.value)}
                   required
                 />
