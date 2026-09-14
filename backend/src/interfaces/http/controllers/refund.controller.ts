@@ -4,6 +4,7 @@ import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { auditLog, auditLogStrict, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
+import { recordLedgerEntryStrict, LEDGER_ENTRY_TYPES } from '../../../infrastructure/finance/ledger.service';
 import { NotFoundError, ValidationError } from '../../../shared/errors';
 
 
@@ -112,13 +113,21 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
       // Also lock the booking row (b) so this can't race a concurrent refund
       // request being created for the same booking (createRefundRequest above
       // takes the same lock before computing net-collected funds).
+      // Also lock the payment row (p) — approval writes payments.status and
+      // payments.refunded_amount atomically alongside the refund itself, so a
+      // concurrent approval of a SIBLING refund on the same payment can't
+      // read a stale refunded_amount and overwrite this one's update.
       const { rows } = await client.query(
         `SELECT r.*, b.total_price, b.deposit_amount, b.deposit_method,
-                b.remainder_amount, b.remainder_method
+                b.remainder_amount, b.remainder_method,
+                COALESCE(c.name, 'Court') AS court_name,
+                p.status AS payment_status
          FROM refunds r
          JOIN bookings b ON b.id = r.booking_id
+         JOIN payments p ON p.id = r.payment_id
+         LEFT JOIN courts c ON c.id = b.court_id
          WHERE r.id = $1 AND b.club_id = $2
-         FOR UPDATE OF r, b`,
+         FOR UPDATE OF r, b, p`,
         [req.params.id, clubIdOf(req)]
       );
       if (!rows.length) throw new NotFoundError('Refund', req.params.id);
@@ -129,6 +138,10 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
       // refund on the same booking could have been approved in the time this
       // one sat pending, so the check at request-creation time alone is not
       // sufficient to guarantee approved refunds never exceed what's collected.
+      // Validate BEFORE writing anything — a rejected approval must leave the
+      // refund/payment/ledger completely untouched.
+      let paymentSync: { newPaymentStatus: 'fully_refunded' | 'partially_refunded'; totalRefundedAfter: number; collectedAmount: number; alreadyApproved: number } | null = null;
+
       if (action === 'approve') {
         const depositCollected =
           refund.deposit_method && refund.deposit_method !== 'NONE' ? Number(refund.deposit_amount) : 0;
@@ -150,6 +163,12 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
             { code: 'REFUND_EXCEEDS_COLLECTED_AMOUNT' }
           );
         }
+
+        const totalRefundedAfter = Math.round((alreadyApproved + Number(refund.amount)) * 100) / 100;
+        paymentSync = {
+          collectedAmount, alreadyApproved, totalRefundedAfter,
+          newPaymentStatus: totalRefundedAfter >= collectedAmount ? 'fully_refunded' : 'partially_refunded',
+        };
       }
 
       const newStatus = action === 'approve' ? 'approved' : 'rejected';
@@ -160,6 +179,28 @@ export async function approveOrRejectRefund(req: Request, res: Response, next: N
          WHERE id=$1`,
         [req.params.id, newStatus, req.user!.sub, internalNotes ?? null]
       );
+
+      // Synchronise the payment + ledger atomically with the refund-status
+      // change above, so payment/refund/ledger/reports can never drift out of
+      // sync with each other — all in the same transaction, or none of it.
+      if (paymentSync) {
+        await client.query(
+          `UPDATE payments SET status = $2, refunded_amount = $3, updated_at = NOW() WHERE id = $1`,
+          [refund.payment_id, paymentSync.newPaymentStatus, paymentSync.totalRefundedAfter]
+        );
+
+        await recordLedgerEntryStrict(client, {
+          clubId: clubIdOf(req), entryType: LEDGER_ENTRY_TYPES.REFUND, direction: 'DEBIT',
+          amount: Number(refund.amount), bookingId: refund.booking_id, paymentId: refund.payment_id,
+          courtName: refund.court_name, reason: refund.reason,
+          createdBy: req.user!.sub, createdByRole: req.user!.role,
+          metadata: {
+            refundId: refund.id, collectedAmount: paymentSync.collectedAmount,
+            alreadyApproved: paymentSync.alreadyApproved, totalRefundedAfter: paymentSync.totalRefundedAfter,
+            paymentStatusBefore: refund.payment_status, paymentStatusAfter: paymentSync.newPaymentStatus,
+          },
+        });
+      }
 
       await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
         ipAddress: req.ip,

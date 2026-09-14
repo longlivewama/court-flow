@@ -88,29 +88,63 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
   const [cancelReason, setCancelReason] = useState('');
   const [refundOverride, setRefundOverride] = useState<'auto' | 'refund' | 'forfeit'>('auto');
   const [acting, setActing]     = useState(false);
+  // "Now" for the pre-cancel refund estimate below — a lazy initializer
+  // (allowed to be impure; runs once at mount) refreshed inside load()'s
+  // async response handler each time a booking is (re)fetched, alongside
+  // setBooking, rather than calling the impure Date.now() in the render body.
+  const [now, setNow]           = useState(() => Date.now());
 
-  const load = useCallback(() => {
+  // The bare async fetch — no synchronous setState at its start, so it's
+  // safe to call directly from the open-effect below (only its .then/.catch/
+  // .finally callbacks touch state, same as setBooking already did).
+  const fetchBooking = useCallback(() => {
     if (!bookingId) return;
-    setLoading(true);
-    setError('');
-    api.get(`/bookings/${bookingId}`)
-      .then(({ data }) => setBooking(data))
+    return api.get(`/bookings/${bookingId}`)
+      .then(({ data }) => { setBooking(data); setNow(Date.now()); })
       .catch(() => setError('Could not load this booking'))
       .finally(() => setLoading(false));
   }, [bookingId]);
 
-  useEffect(() => {
-    if (open && bookingId) {
+  // Full reload used by event handlers (cancel/check-in) after a mutation —
+  // synchronously flips the loading skeleton back on first, which is fine
+  // here since these only ever run from a click handler, not an effect.
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
+    fetchBooking();
+  }, [fetchBooking]);
+
+  // Reset panel-local state when it opens for a (possibly new) booking.
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") since the panel stays
+  // mounted between opens for its slide animation, so a key-based remount
+  // isn't an option.
+  const openBookingKey = open ? bookingId : null;
+  const [prevKey, setPrevKey] = useState(openBookingKey);
+  if (openBookingKey !== prevKey) {
+    setPrevKey(openBookingKey);
+    if (openBookingKey) {
       setBooking(null);
       setCancelMode(false);
       setCancelReason('');
       setRefundOverride('auto');
-      load();
+      setLoading(true);
+      setError('');
     }
-  }, [open, bookingId, load]);
+  }
+
+  // The actual fetch is a genuine external-system side effect, so it stays
+  // in an effect — but calls the synchronous-setState-free fetchBooking(),
+  // not load(), since the loading/error reset above already covers what
+  // load()'s own synchronous setState calls would otherwise duplicate here.
+  useEffect(() => {
+    if (open && bookingId) {
+      fetchBooking();
+    }
+  }, [open, bookingId, fetchBooking]);
 
   async function cancelBooking() {
-    if (!bookingId) return;
+    if (!bookingId || acting) return; // guards against a duplicate mutation from a double-click
     // Staff must always give a reason (mirrors the server-side guard).
     if (isStaff && !cancelReason.trim()) {
       setError('A cancellation reason is required.');
@@ -136,7 +170,7 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
   }
 
   async function checkIn() {
-    if (!bookingId) return;
+    if (!bookingId || acting) return; // guards against a duplicate mutation from a double-click
     setActing(true);
     setError('');
     try {
@@ -167,7 +201,7 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
     (booking?.deposit_method && booking.deposit_method !== 'NONE' ? deposit : 0) +
     (booking?.remainder_method && booking.remainder_method !== 'NONE' ? remainder : 0);
   const hoursUntilStart = booking
-    ? (new Date(booking.start_time).getTime() - Date.now()) / 3_600_000
+    ? (new Date(booking.start_time).getTime() - now) / 3_600_000
     : 0;
   const estimatedAfterDeadline = hoursUntilStart < DEFAULT_DEADLINE_HOURS;
   const estimatedOutcome: 'none' | 'refund' | 'forfeit' =

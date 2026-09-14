@@ -63,19 +63,25 @@ export default function AvailabilityPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
 
-  const load = useCallback(async () => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as load's
+  // own leading synchronous setState calls.
+  const [prevDate, setPrevDate] = useState(date);
+  if (date !== prevDate) {
+    setPrevDate(date);
     setLoading(true);
     setError('');
-    try {
-      const { data } = await api.get(`/courts/availability-grid?date=${date}`);
-      setData(data);
-    } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { message?: string } } };
-      setError(axErr?.response?.data?.message ?? 'Failed to load availability. Please retry.');
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
+  }
+
+  const load = useCallback(() => {
+    return api.get(`/courts/availability-grid?date=${date}`)
+      .then(({ data }) => setData(data))
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setError(axErr?.response?.data?.message ?? 'Failed to load availability. Please retry.');
+        setData(null);
+      })
+      .finally(() => setLoading(false));
   }, [date]);
 
   useEffect(() => { load(); }, [load]);

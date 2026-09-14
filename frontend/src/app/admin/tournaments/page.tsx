@@ -97,11 +97,13 @@ export default function AdminTournamentsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating]     = useState(false);
-  const [draft, setDraft] = useState({
+  // Lazy initializer: only evaluated once at mount, so the impure Date.now()
+  // here doesn't run on every render the way a plain object literal would.
+  const [draft, setDraft] = useState(() => ({
     name: '', description: '', registrationFee: '', maxTeams: '16',
     startsAt: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 16),
     endsAt: '',
-  });
+  }));
   const [dateError, setDateError] = useState('');
 
   const [teamDraft, setTeamDraft]   = useState({ teamName: '', contactPhone: '' });
@@ -124,15 +126,23 @@ export default function AdminTournamentsPage() {
   }, []);
 
   const loadDetail = useCallback((id: string) => {
-    setDetailLoading(true);
     api.get(`/tournaments/${id}`)
       .then(({ data }) => setDetail(data))
       .catch((err) => setError(err.response?.data?.message ?? 'Could not load the tournament.'))
       .finally(() => setDetailLoading(false));
   }, []);
 
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as the
+  // detail effect's own leading synchronous setState calls.
+  const [prevSelectedId, setPrevSelectedId] = useState(selectedId);
+  if (selectedId !== prevSelectedId) {
+    setPrevSelectedId(selectedId);
+    if (selectedId) setDetailLoading(true); else setDetail(null);
+  }
+
   useEffect(() => { loadList(); }, [loadList]);
-  useEffect(() => { if (selectedId) loadDetail(selectedId); else setDetail(null); }, [selectedId, loadDetail]);
+  useEffect(() => { if (selectedId) loadDetail(selectedId); }, [selectedId, loadDetail]);
 
   function apiError(err: unknown, fallback: string): string {
     const e = err as { response?: { data?: { message?: string; error?: { message?: string } } } };

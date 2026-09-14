@@ -5,7 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../../../infrastructure/database/client';
-import { redis, CACHE_KEYS, CACHE_TTL } from '../../../infrastructure/cache/redis.client';
+import { redis, CACHE_KEYS } from '../../../infrastructure/cache/redis.client';
 import { hashPassword, verifyPassword } from '../../../infrastructure/auth/argon2.service';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../../infrastructure/auth/jwt.service';
 import { emailService } from '../../../infrastructure/email/email.service';
@@ -275,6 +275,144 @@ export async function verifyEmail(req: Request, res: Response, next: NextFunctio
   } catch (err) { next(err); }
 }
 
+// ── Password reset ─────────────────────────────────────────────
+// TTL matches the copy in emailService.sendPasswordReset ("expires in 1 hour").
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email('A valid email is required'),
+});
+
+const resetPasswordSchema = z.object({
+  token:    z.string().trim().min(1, 'Reset token is required'),
+  password: PASSWORD_POLICY,
+});
+
+// Always the same response, whether or not the email matched an account —
+// the endpoint must never let a caller distinguish "sent" from "no such user".
+const FORGOT_PASSWORD_MESSAGE = 'If an account exists with this email, a password reset link has been sent.';
+
+/**
+ * Mint + deliver a reset token for one user. Split out of forgotPassword()
+ * so it can run fire-and-forget per match: the response must not wait on
+ * (and therefore must not leak timing for) DB writes or the email send.
+ */
+async function issuePasswordResetToken(
+  user: { id: string; club_id: string; first_name: string; email: string; role: string },
+  req: Request
+): Promise<void> {
+  // Invalidate previous active tokens for this user — only the newest link
+  // issued should ever be redeemable.
+  await db.query(`DELETE FROM password_resets WHERE user_id = $1 AND used_at IS NULL`, [user.id]);
+
+  const rawToken  = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+
+  await db.query(
+    `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2,$3)`,
+    [user.id, tokenHash, expiresAt.toISOString()]
+  );
+
+  const link = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}`;
+  if (process.env.NODE_ENV === 'development') {
+    // Same convention as the email/club verification links above: dev has no
+    // real SMTP configured, so the raw token is logged ONLY behind this gate,
+    // never in production or test. The token itself is still stored hashed.
+    logger.info({ userId: user.id, link }, 'Password reset link (dev only)');
+  } else {
+    await emailService.sendPasswordReset({ to: user.email, firstName: user.first_name, resetLink: link });
+  }
+
+  await auditLog({
+    clubId: user.club_id, userId: user.id, userRole: user.role,
+    ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
+    actionType: AUDIT_ACTIONS.PASSWORD_RESET_REQUESTED, entityType: 'user', entityId: user.id,
+  });
+}
+
+// ── POST /api/auth/forgot-password ────────────────────────────
+// Never reveals whether the email exists. An email may be shared across
+// several club workspaces (see login()'s multi-tenant handling) — every
+// active account bound to it gets its own token/link, all delivered to the
+// same inbox, so fanning out discloses nothing to anyone but the true owner.
+export async function forgotPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { email } = forgotPasswordSchema.parse(req.body);
+
+    const { rows: users } = await db.query<{
+      id: string; club_id: string; first_name: string; email: string; role: string;
+    }>(
+      `SELECT id, club_id, first_name, email, role FROM users WHERE email = $1 AND is_active = TRUE`,
+      [email]
+    );
+
+    for (const user of users) {
+      issuePasswordResetToken(user, req).catch((err) => {
+        logger.error({ err, userId: user.id }, 'Password reset issuance failed');
+      });
+    }
+
+    res.json({ message: FORGOT_PASSWORD_MESSAGE });
+  } catch (err) { next(err); }
+}
+
+// ── POST /api/auth/reset-password ─────────────────────────────
+export async function resetPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { token, password } = resetPasswordSchema.parse(req.body);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const invalidToken = new ValidationError('This password reset link is invalid or has expired');
+
+    const { rows } = await db.query<{
+      id: string; user_id: string; expires_at: Date; used_at: Date | null; club_id: string; role: string;
+    }>(
+      `SELECT pr.id, pr.user_id, pr.expires_at, pr.used_at, u.club_id, u.role
+         FROM password_resets pr
+         JOIN users u ON u.id = pr.user_id
+        WHERE pr.token_hash = $1`,
+      [tokenHash]
+    );
+    if (!rows.length || rows[0].used_at || rows[0].expires_at < new Date()) {
+      throw invalidToken;
+    }
+    const record = rows[0];
+    const passwordHash = await hashPassword(password);
+
+    await withTransaction(async (client) => {
+      // Single-use, race-safe: only the first concurrent redemption of this
+      // token flips used_at, so a second simultaneous attempt sees rowCount 0
+      // and is rejected instead of both silently succeeding.
+      const { rowCount } = await client.query(
+        `UPDATE password_resets SET used_at = NOW() WHERE id = $1 AND used_at IS NULL`,
+        [record.id]
+      );
+      if (!rowCount) throw invalidToken;
+
+      await client.query(
+        `UPDATE users SET password_hash = $1, failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
+          WHERE id = $2`,
+        [passwordHash, record.user_id]
+      );
+
+      // A leaked old password must not still grant access via a live session
+      // after the reset — revoke every outstanding refresh token.
+      await client.query(
+        `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+        [record.user_id]
+      );
+    });
+
+    await auditLog({
+      clubId: record.club_id, userId: record.user_id, userRole: record.role,
+      ipAddress: req.ip, deviceInfo: req.headers['user-agent'],
+      actionType: AUDIT_ACTIONS.USER_PASSWORD_RESET, entityType: 'user', entityId: record.user_id,
+    });
+
+    res.json({ message: 'Password has been reset successfully. Please sign in with your new password.' });
+  } catch (err) { next(err); }
+}
+
 // ── POST /api/auth/login ──────────────────────────────────────
 // Multi-tenant resolution: the user's club workspace is looked up from THEIR
 // row (never from an environment constant), the club's own state gates the
@@ -369,7 +507,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 
     const tokenPayload = { sub: user.id, email, role: user.role, clubId: user.club_id };
     const accessToken  = signAccessToken(tokenPayload);
-    const { token: refreshToken, jti: refreshJti } = signRefreshToken(tokenPayload);
+    const { token: refreshToken } = signRefreshToken(tokenPayload);
 
     // Store refresh token hash in DB
     const refreshHash = crypto.createHash('sha256').update(refreshToken).digest('hex');

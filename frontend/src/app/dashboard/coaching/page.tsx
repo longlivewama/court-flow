@@ -106,7 +106,6 @@ export default function CoachViewportPage() {
   );
 
   const load = useCallback(() => {
-    setError('');
     api.get('/coaching/me?range_days=120')
       .then(({ data }) => {
         setCoach(data.coach ?? null);

@@ -60,9 +60,17 @@ export default function AnalyticsPage() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
 
-  useEffect(() => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as the
+  // effect's own leading synchronous setState calls.
+  const [prevRangeDays, setPrevRangeDays] = useState(rangeDays);
+  if (rangeDays !== prevRangeDays) {
+    setPrevRangeDays(rangeDays);
     setLoading(true);
     setError('');
+  }
+
+  useEffect(() => {
     api.get(`/analytics/overview?range_days=${rangeDays}`)
       .then(({ data }) => setData(data))
       .catch((err) => setError(err.response?.data?.message ?? 'Could not load analytics.'))

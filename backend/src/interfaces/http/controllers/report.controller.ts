@@ -7,7 +7,7 @@ import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { ValidationError, NotFoundError } from '../../../shared/errors';
-import { v4 as uuidv4 } from 'uuid';
+import { parseDateParam } from '../../../shared/query-params';
 
 
 type ReportType = 'daily_revenue' | 'weekly_revenue' | 'monthly_revenue' | 'court_utilization'
@@ -129,13 +129,22 @@ export async function downloadReport(req: Request, res: Response, next: NextFunc
 }
 
 // ── Report data fetchers ──────────────────────────────────────
-async function fetchReportData(clubId: string, type: ReportType, filters: Record<string, string>): Promise<unknown[]> {
-  const from = filters.from ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const to   = filters.to   ?? new Date().toISOString();
+export async function fetchReportData(clubId: string, type: ReportType, filters: Record<string, string>): Promise<unknown[]> {
+  const from = parseDateParam(filters.from, 'filters.from') ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const to   = parseDateParam(filters.to, 'filters.to')     ?? new Date().toISOString();
 
   const QUERIES: Record<ReportType, { sql: string; params: unknown[] }> = {
+    // Bucketed by CourtFlow's operational day, not the plain Cairo calendar
+    // date: the club's day runs 06:00 → 05:59:59 the next morning (matches
+    // the 6 AM boundary already used for the staff schedule window), so a
+    // 02:00 booking belongs to the PREVIOUS operational day's revenue, not
+    // the new calendar date it technically falls on. Shifting the Cairo
+    // wall-clock time back 6 hours before truncating achieves that. The
+    // WHERE filter still ranges over the raw indexed b.start_time column —
+    // only the GROUP BY/SELECT bucketing key is shifted — so this stays
+    // index-friendly (see Phase 14 performance notes on wrapped predicates).
     daily_revenue: {
-      sql: `SELECT DATE(b.start_time AT TIME ZONE 'Africa/Cairo') AS date,
+      sql: `SELECT DATE((b.start_time AT TIME ZONE 'Africa/Cairo') - INTERVAL '6 hours') AS date,
               COUNT(*) AS bookings, SUM(p.total_amount) AS revenue,
               SUM(p.deposit_amount) AS deposits_collected
             FROM bookings b JOIN payments p ON p.booking_id=b.id
@@ -145,7 +154,7 @@ async function fetchReportData(clubId: string, type: ReportType, filters: Record
       params: [clubId, from, to],
     },
     weekly_revenue: {
-      sql: `SELECT DATE_TRUNC('week', b.start_time AT TIME ZONE 'Africa/Cairo') AS week,
+      sql: `SELECT DATE_TRUNC('week', (b.start_time AT TIME ZONE 'Africa/Cairo') - INTERVAL '6 hours') AS week,
               COUNT(*) AS bookings, SUM(p.total_amount) AS revenue
             FROM bookings b JOIN payments p ON p.booking_id=b.id
             WHERE b.club_id=$1 AND b.status IN ('confirmed','checked_in','completed')
@@ -154,7 +163,7 @@ async function fetchReportData(clubId: string, type: ReportType, filters: Record
       params: [clubId, from, to],
     },
     monthly_revenue: {
-      sql: `SELECT TO_CHAR(b.start_time AT TIME ZONE 'Africa/Cairo','MM/YYYY') AS month,
+      sql: `SELECT TO_CHAR((b.start_time AT TIME ZONE 'Africa/Cairo') - INTERVAL '6 hours','MM/YYYY') AS month,
               COUNT(*) AS bookings, SUM(p.total_amount) AS revenue
             FROM bookings b JOIN payments p ON p.booking_id=b.id
             WHERE b.club_id=$1 AND b.status IN ('confirmed','checked_in','completed')

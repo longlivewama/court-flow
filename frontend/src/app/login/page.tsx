@@ -3,9 +3,9 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
+import type { AxiosError } from 'axios';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { api } from '@/lib/api';
-import type { Metadata } from 'next';
 
 const SPRING = { type: 'spring' as const, stiffness: 360, damping: 28 };
 
@@ -21,6 +21,7 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return; // guards against a duplicate submit (e.g. rapid Enter presses)
     setError('');
     setLoading(true);
     try {
@@ -30,7 +31,7 @@ export default function LoginPage() {
       setAuth(data.user, data.accessToken);
       router.replace('/dashboard');
     } catch (err: unknown) {
-      const resp = (err as any)?.response?.data;
+      const resp = (err as AxiosError<{ message?: string; details?: { code?: string } }>)?.response?.data;
       if (resp?.details?.code === 'CLUB_SLUG_REQUIRED') {
         setNeedsSlug(true);
         setError('This email belongs to multiple club workspaces — enter your club slug below.');

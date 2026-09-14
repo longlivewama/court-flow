@@ -12,15 +12,27 @@ import { ZodError } from 'zod';
 import { api } from '@/lib/api';
 import { workingHoursSchema } from '@/lib/schemas';
 
-interface ClubSettings {
-  club_name:               string;
-  contact_phone:           string;
-  contact_email:           string;
-  slot_duration_minutes:   number;
-  advance_booking_days:    number;
-  cancellation_cutoff_hrs: number;
-  deposit_required:        boolean;
-  deposit_percentage:      number;
+// ── API DTO ────────────────────────────────────────────────────
+// Exact shape of GET/PATCH /api/settings (see clubSettingsSchema in
+// backend court.controller.ts) — field names match the `clubs` table
+// columns 1:1. This is the ONLY place that shape is named; the rest of
+// this page works in ClubSettingsForm (the UI's own field names) and
+// converts at the two API boundaries via dtoToForm() / formToDto().
+interface ClubSettingsDto {
+  name:                           string;
+  email:                          string | null;
+  phone:                          string | null;
+  deposit_percent:                number | string;
+  cancellation_deadline_hours:    number | string;
+}
+
+// ── UI form model ──────────────────────────────────────────────
+interface ClubSettingsForm {
+  clubName:               string;
+  contactPhone:           string;
+  contactEmail:           string;
+  cancellationCutoffHrs:  number;
+  depositPercentage:      number;
 }
 
 interface WorkingHourItem {
@@ -30,16 +42,51 @@ interface WorkingHourItem {
   isClosed: boolean;
 }
 
-const DEFAULTS: ClubSettings = {
-  club_name:               '',
-  contact_phone:           '',
-  contact_email:           '',
-  slot_duration_minutes:   60,
-  advance_booking_days:    14,
-  cancellation_cutoff_hrs: 24,
-  deposit_required:        true,
-  deposit_percentage:      30,
+// Only used while the real settings are still loading — never merged over a
+// successful API response, so a naming slip can't silently resurrect these
+// as if they were the club's actual saved values.
+const LOADING_PLACEHOLDER: ClubSettingsForm = {
+  clubName:              '',
+  contactPhone:          '',
+  contactEmail:          '',
+  cancellationCutoffHrs: 24,
+  depositPercentage:     30,
 };
+
+/** API DTO → UI form model (GET /settings response). */
+function dtoToForm(dto: ClubSettingsDto): ClubSettingsForm {
+  return {
+    clubName:              dto.name ?? '',
+    contactEmail:          dto.email ?? '',
+    contactPhone:          dto.phone ?? '',
+    // pg returns NUMERIC columns as strings — coerce defensively.
+    cancellationCutoffHrs: Number(dto.cancellation_deadline_hours),
+    depositPercentage:     Number(dto.deposit_percent),
+  };
+}
+
+/** UI form model → API DTO (PATCH /settings body). */
+function formToDto(form: ClubSettingsForm): Partial<ClubSettingsDto> {
+  return {
+    name:                        form.clubName.trim(),
+    email:                       form.contactEmail.trim(),
+    phone:                       form.contactPhone.trim(),
+    cancellation_deadline_hours: form.cancellationCutoffHrs,
+    deposit_percent:             form.depositPercentage,
+  };
+}
+
+/** Mirrors the backend's clubSettingsSchema so bad input never round-trips to the API. */
+function validateForm(form: ClubSettingsForm): string | null {
+  if (!form.clubName.trim()) return 'Club name is required.';
+  if (!Number.isFinite(form.cancellationCutoffHrs) || form.cancellationCutoffHrs < 0 || form.cancellationCutoffHrs > 8760) {
+    return 'Cancellation cutoff must be between 0 and 8760 hours.';
+  }
+  if (!Number.isFinite(form.depositPercentage) || form.depositPercentage < 10 || form.depositPercentage > 100) {
+    return 'Deposit percentage must be between 10 and 100.';
+  }
+  return null;
+}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -55,22 +102,28 @@ function is24Hours(openTime: string, closeTime: string): boolean {
 const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
 export default function SettingsPage() {
-  const [form, setForm]       = useState<ClubSettings>(DEFAULTS);
+  const [form, setForm]       = useState<ClubSettingsForm>(LOADING_PLACEHOLDER);
   const [workingHours, setWorkingHours] = useState<WorkingHourItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
   const [error, setError]     = useState('');
 
   useEffect(() => {
-    Promise.all([
-      api.get('/settings').then(({ data }) => data),
-      api.get('/settings/working-hours').then(({ data }) => data)
-    ])
-      .then(([settingsData, workingHoursData]) => {
-        setForm({ ...DEFAULTS, ...settingsData });
+    // Independent failure handling: a broken working-hours fetch must not
+    // prevent real settings from loading (and vice versa) — and a settings
+    // load failure must be visible, not silently masked by the placeholder,
+    // since saving on top of the placeholder would overwrite real data.
+    const settingsLoad = api.get('/settings')
+      .then(({ data }) => setForm(dtoToForm(data)))
+      .catch(() => setLoadError('Could not load current settings. Reload the page before making changes.'));
+
+    const workingHoursLoad = api.get('/settings/working-hours')
+      .then(({ data }) => {
         const sorted = Array.from({ length: 7 }, (_, i) => {
-          const found = workingHoursData.find((d: any) => d.day_of_week === i);
+          const found = (data as { day_of_week: number; open_time: string; close_time: string; is_closed: boolean }[])
+            .find((d) => d.day_of_week === i);
           return found ? {
             dayOfWeek: i,
             openTime: found.open_time.slice(0, 5),
@@ -86,31 +139,37 @@ export default function SettingsPage() {
         setWorkingHours(sorted);
       })
       .catch(() => {
-        // Fallback for settings or working hours if endpoint fails/empty
         setWorkingHours(Array.from({ length: 7 }, (_, i) => ({
           dayOfWeek: i,
           openTime: '08:00',
           closeTime: '23:00',
           isClosed: false
         })));
-      })
-      .finally(() => setLoading(false));
+      });
+
+    Promise.allSettled([settingsLoad, workingHoursLoad]).finally(() => setLoading(false));
   }, []);
 
-  function patch<K extends keyof ClubSettings>(key: K, value: ClubSettings[K]) {
+  function patch<K extends keyof ClubSettingsForm>(key: K, value: ClubSettingsForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
     setSaved(false);
   }
 
   async function handleSave() {
-    setSaving(true);
+    if (saving) return; // guards against a duplicate mutation from a double-click
     setError('');
+
+    const formErr = validateForm(form);
+    if (formErr) { setError(formErr); return; }
+
+    setSaving(true);
     try {
       const validatedHours = workingHoursSchema.parse({ hours: workingHours });
-      await Promise.all([
-        api.patch('/settings', form),
-        api.put('/settings/working-hours', validatedHours)
-      ]);
+      const { data } = await api.patch('/settings', formToDto(form));
+      await api.put('/settings/working-hours', validatedHours);
+      // Reflect exactly what the server persisted (e.g. numeric coercions),
+      // so the form never silently drifts from the saved record.
+      setForm(dtoToForm(data));
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err: unknown) {
@@ -165,7 +224,7 @@ export default function SettingsPage() {
           id="save-settings-btn"
           className="btn btn-primary"
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || !!loadError}
         >
           {saving ? (
             <div className="spinner" style={{ width: 14, height: 14 }} />
@@ -175,6 +234,18 @@ export default function SettingsPage() {
           {saved ? 'Saved!' : 'Save Changes'}
         </button>
       </div>
+
+      {/* Load-failure banner — saving is disabled until this clears on reload */}
+      {loadError && (
+        <div style={{
+          background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+          borderRadius: 8, padding: '10px 16px', marginBottom: 20,
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 13, color: 'var(--error, #ef4444)',
+        }}>
+          ⚠️ {loadError}
+        </div>
+      )}
 
       {/* Saved banner */}
       {saved && (
@@ -220,8 +291,8 @@ export default function SettingsPage() {
               <input
                 id="setting-club-name"
                 className="input"
-                value={form.club_name}
-                onChange={(e) => patch('club_name', e.target.value)}
+                value={form.clubName}
+                onChange={(e) => patch('clubName', e.target.value)}
                 placeholder="e.g. CourtFlow Sports Club"
               />
             </div>
@@ -231,8 +302,8 @@ export default function SettingsPage() {
                 id="setting-contact-email"
                 className="input"
                 type="email"
-                value={form.contact_email}
-                onChange={(e) => patch('contact_email', e.target.value)}
+                value={form.contactEmail}
+                onChange={(e) => patch('contactEmail', e.target.value)}
                 placeholder="admin@club.com"
               />
             </div>
@@ -250,55 +321,33 @@ export default function SettingsPage() {
             <input
               id="setting-contact-phone"
               className="input"
-              value={form.contact_phone}
-              onChange={(e) => patch('contact_phone', e.target.value)}
+              value={form.contactPhone}
+              onChange={(e) => patch('contactPhone', e.target.value)}
               placeholder="+20 1X XXXX XXXX"
             />
           </div>
         </motion.div>
 
-        {/* Booking rules */}
+        {/* Cancellation policy */}
         <motion.div className="card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ ...SPRING, delay: 0.1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
             <Clock size={16} style={{ color: 'var(--text-secondary)' }} />
-            <span style={{ fontWeight: 600, fontSize: 15 }}>Booking Rules</span>
+            <span style={{ fontWeight: 600, fontSize: 15 }}>Cancellation Policy</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-            <div className="input-group">
-              <label className="input-label">Slot duration (min)</label>
-              <input
-                id="setting-slot-duration"
-                className="input"
-                type="number"
-                min={30}
-                step={15}
-                value={isNaN(Number(form?.slot_duration_minutes)) ? 60 : (form.slot_duration_minutes ?? 60)}
-                onChange={(e) => patch('slot_duration_minutes', parseInt(e.target.value, 10) || 0)}
-              />
-            </div>
-            <div className="input-group">
-              <label className="input-label">Advance booking (days)</label>
-              <input
-                id="setting-advance-days"
-                className="input"
-                type="number"
-                min={1}
-                max={90}
-                value={isNaN(Number(form?.advance_booking_days)) ? 14 : (form.advance_booking_days ?? 14)}
-                onChange={(e) => patch('advance_booking_days', parseInt(e.target.value, 10) || 0)}
-              />
-            </div>
-            <div className="input-group">
-              <label className="input-label">Cancellation cutoff (hrs)</label>
-              <input
-                id="setting-cancellation-cutoff"
-                className="input"
-                type="number"
-                min={0}
-                value={isNaN(Number(form?.cancellation_cutoff_hrs)) ? 24 : (form.cancellation_cutoff_hrs ?? 24)}
-                onChange={(e) => patch('cancellation_cutoff_hrs', parseInt(e.target.value, 10) || 0)}
-              />
-            </div>
+          <div className="input-group" style={{ maxWidth: 200 }}>
+            <label className="input-label">Cancellation cutoff (hrs)</label>
+            <input
+              id="setting-cancellation-cutoff"
+              className="input"
+              type="number"
+              min={0}
+              max={8760}
+              value={Number.isFinite(form.cancellationCutoffHrs) ? form.cancellationCutoffHrs : ''}
+              onChange={(e) => patch('cancellationCutoffHrs', e.target.value === '' ? NaN : parseInt(e.target.value, 10))}
+            />
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+              Cancellations inside this window before the booking&apos;s start time forfeit the deposit instead of refunding it.
+            </p>
           </div>
         </motion.div>
 
@@ -400,39 +449,24 @@ export default function SettingsPage() {
             <span style={{ fontWeight: 600, fontSize: 15 }}>Deposit Policy</span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', fontSize: 14 }}>
-              <input
-                id="setting-deposit-required"
-                type="checkbox"
-                checked={form.deposit_required}
-                onChange={(e) => patch('deposit_required', e.target.checked)}
-                style={{ width: 16, height: 16, accentColor: 'var(--accent)' }}
-              />
-              Require deposit at booking
-            </label>
+          {/* Every booking requires a deposit (a minimum of 10% is enforced by
+              the database) — there is no "no deposit" mode, so this is a
+              single always-visible field rather than a togglable one. */}
+          <div className="input-group" style={{ maxWidth: 200 }}>
+            <label className="input-label">Deposit percentage (%)</label>
+            <input
+              id="setting-deposit-percentage"
+              className="input"
+              type="number"
+              min={10}
+              max={100}
+              value={Number.isFinite(form.depositPercentage) ? form.depositPercentage : ''}
+              onChange={(e) => patch('depositPercentage', e.target.value === '' ? NaN : parseInt(e.target.value, 10))}
+            />
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+              Minimum 10%. Charged upfront to confirm a booking.
+            </p>
           </div>
-
-          {form.deposit_required && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="input-group"
-              style={{ maxWidth: 200 }}
-            >
-              <label className="input-label">Deposit percentage (%)</label>
-              <input
-                id="setting-deposit-percentage"
-                className="input"
-                type="number"
-                min={1}
-                max={100}
-                value={isNaN(Number(form?.deposit_percentage)) ? 30 : (form.deposit_percentage ?? 30)}
-                onChange={(e) => patch('deposit_percentage', parseInt(e.target.value, 10) || 0)}
-              />
-            </motion.div>
-          )}
         </motion.div>
 
       </div>

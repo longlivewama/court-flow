@@ -29,16 +29,11 @@ export default function MyBookingsPage() {
   const [loading, setLoading]   = useState(true);
   const router = useRouter();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { data } = await api.get('/bookings/me');
-      setBookings(data.data ?? data);
-    } catch {
-      setBookings([]);
-    } finally {
-      setLoading(false);
-    }
+  const load = useCallback(() => {
+    return api.get('/bookings/me')
+      .then(({ data }) => setBookings(data.data ?? data))
+      .catch(() => setBookings([]))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load]);

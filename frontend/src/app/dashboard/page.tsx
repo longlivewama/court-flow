@@ -109,33 +109,42 @@ export default function DashboardPage() {
 
   const [panelOpen, setPanelOpen]         = useState(false);
   const [detailsId, setDetailsId]         = useState<string | null>(null);
+  // "Now" for the trend chart's day labels below — a lazy initializer
+  // (allowed to be impure; runs once at mount) refreshed alongside
+  // rangeBookings each time load() succeeds, rather than calling the impure
+  // Date.now() inside the trend useMemo's render-time computation.
+  const [now, setNow]                     = useState(() => Date.now());
 
   const today = format(toZonedTime(new Date(), TIMEZONE), 'yyyy-MM-dd');
 
-  const load = useCallback(async () => {
-    setError('');
-    try {
-      const from = new Date(Date.now() - (TREND_DAYS - 1) * 24 * 60 * 60 * 1000);
-      from.setHours(0, 0, 0, 0);
+  // A .then/.catch/.finally chain (rather than async/await) so every state
+  // update runs inside a promise callback, not synchronously in the
+  // function's own call frame — this is what lets the effect below call it
+  // directly without React flagging a synchronous setState-in-effect.
+  const load = useCallback(() => {
+    const from = new Date(Date.now() - (TREND_DAYS - 1) * 24 * 60 * 60 * 1000);
+    from.setHours(0, 0, 0, 0);
 
-      const [schedRes, pendingRes, rangeRes, finRes] = await Promise.all([
-        api.get(`/dashboard/schedule?date=${today}`),
-        api.get('/bookings?status=pending_verification&limit=50'),
-        api.get(`/bookings?from=${from.toISOString()}&to=${new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()}&limit=500`),
-        api.get('/bookings/financial-summary'),
-      ]);
-
-      const sched = schedRes.data;
-      setTodayBookings(Array.isArray(sched) ? sched : (sched?.bookings ?? []));
-      setPendingCount((pendingRes.data.data ?? []).length);
-      setRangeBookings(rangeRes.data.data ?? []);
-      setFin(finRes.data);
-    } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      setError(e.response?.data?.message ?? 'Failed to load the dashboard.');
-    } finally {
-      setLoading(false);
-    }
+    return Promise.all([
+      api.get(`/dashboard/schedule?date=${today}`),
+      api.get('/bookings?status=pending_verification&limit=50'),
+      api.get(`/bookings?from=${from.toISOString()}&to=${new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()}&limit=500`),
+      api.get('/bookings/financial-summary'),
+    ])
+      .then(([schedRes, pendingRes, rangeRes, finRes]) => {
+        setError('');
+        const sched = schedRes.data;
+        setTodayBookings(Array.isArray(sched) ? sched : (sched?.bookings ?? []));
+        setPendingCount((pendingRes.data.data ?? []).length);
+        setRangeBookings(rangeRes.data.data ?? []);
+        setFin(finRes.data);
+        setNow(Date.now());
+      })
+      .catch((err: unknown) => {
+        const e = err as { response?: { data?: { message?: string } } };
+        setError(e.response?.data?.message ?? 'Failed to load the dashboard.');
+      })
+      .finally(() => setLoading(false));
   }, [today]);
 
   useEffect(() => { if (isStaff) load(); }, [isStaff, load]);
@@ -149,11 +158,11 @@ export default function DashboardPage() {
       byDay.set(key, (byDay.get(key) ?? 0) + 1);
     }
     return Array.from({ length: TREND_DAYS }, (_, i) => {
-      const d = new Date(Date.now() - (TREND_DAYS - 1 - i) * 24 * 60 * 60 * 1000);
+      const d = new Date(now - (TREND_DAYS - 1 - i) * 24 * 60 * 60 * 1000);
       const key = format(toZonedTime(d, TIMEZONE), 'yyyy-MM-dd');
       return { day: format(d, 'd MMM'), bookings: byDay.get(key) ?? 0 };
     });
-  }, [rangeBookings]);
+  }, [rangeBookings, now]);
 
   // ── Top courts donut ──────────────────────────────────────────
   const topCourts = useMemo(() => {

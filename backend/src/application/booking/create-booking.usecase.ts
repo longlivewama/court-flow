@@ -16,7 +16,6 @@ import { validateBookingSlot } from '../../domain/booking/booking.validator';
 import { assertTransition, assertPaymentTransition } from '../../domain/booking/booking.state-machine';
 import { isPrimeTime, PRIME_TIME_EXPIRY_MINUTES } from '../../domain/booking/prime-time';
 import { auditLogStrict, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
-import { emailService } from '../../infrastructure/email/email.service';
 import { sheetsService } from '../../infrastructure/sheets/sheets.service';
 import { ValidationError, ConflictError, ForbiddenError } from '../../shared/errors';
 import { logger } from '../../shared/logger';
@@ -82,7 +81,9 @@ export async function createBooking(
   // then mirrored to the club sheet AFTER commit (off the request's hot path).
   let ledger: LedgerSnapshot | null = null;
 
-  const result = await withTransaction(async (client: PoolClient) => {
+  let result: BookingResult;
+  try {
+    result = await withTransaction(async (client: PoolClient) => {
     // ── PESSIMISTIC LOCK: lock the court row for this transaction ──
     // This prevents concurrent bookings from passing validation simultaneously.
     // Scoped by club_id so a courtId from another tenant can never lock or read
@@ -495,7 +496,20 @@ export async function createBooking(
       remainingBalance,
       equipmentTotal,
     };
-  });
+    });
+  } catch (err: unknown) {
+    // Defense-in-depth backstop (migration 021's EXCLUDE constraint / a
+    // unique index) tripping means the app-level FOR UPDATE lock and
+    // validateBookingSlot's conflict check above were somehow bypassed —
+    // that should never happen, but if it does, surface it as the same
+    // clean conflict response a normal validateBookingSlot rejection would
+    // give, not a raw Postgres error turned into an opaque 500.
+    const code = (err as { code?: string } | null)?.code;
+    if (code === '23P01' || code === '23505') {
+      throw new ConflictError('This time slot was just booked by someone else. Please choose a different time.');
+    }
+    throw err;
+  }
 
   // ── Emergency fail-safe ledger sync (background, best-effort) ──────────────
   // Fired the instant a booking is created so owners/staff see it in the backup
