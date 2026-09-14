@@ -130,7 +130,6 @@ const REASON_CONFIG: Record<ReasonType, {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function parseHour(t: string): number { return parseInt(t.split(':')[0], 10); }
-function parseMin(t: string):  number { return parseInt(t.split(':')[1], 10); }
 
 /** Convert a 0-based hour (may be >23 for overnight continuation) to a
  *  12-hour AM/PM label, e.g. 0→"12:00 AM", 12→"12:00 PM", 13→"01:00 PM" */

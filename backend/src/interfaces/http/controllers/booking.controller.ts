@@ -11,10 +11,10 @@ import { cancelBooking, CancelActorRole } from '../../../application/booking/can
 import { deleteBooking } from '../../../application/booking/delete-booking.usecase';
 import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
+import { parsePagination, parseDateParam } from '../../../shared/query-params';
 import { withTransaction } from '../../../infrastructure/database/client';
 import { decryptFile } from '../../../infrastructure/auth/encryption.service';
-import { auditLog, auditLogStrict, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
-import { emailService } from '../../../infrastructure/email/email.service';
+import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ForbiddenError, ValidationError } from '../../../shared/errors';
 
 
@@ -45,9 +45,15 @@ export function receiptUploadMiddleware(req: Request, res: Response, next: NextF
 export async function listBookings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { role, sub: userId } = req.user!;
-    const { status, courtId, customerId, from, to, page = '1', limit = '20' } = req.query as Record<string, string>;
+    const { status, courtId, customerId } = req.query as Record<string, string>;
+    const from = parseDateParam(req.query.from, 'from');
+    const to   = parseDateParam(req.query.to, 'to');
+    // maxLimit 500 (not the 200 other list endpoints use): the calendar
+    // week view and dashboard trend chart legitimately request up to 500 in
+    // a single call (a busy club can exceed 200 bookings across 7-14 days),
+    // and both are staff-only internal views, not a public pagination surface.
+    const { page, limit, offset } = parsePagination(req.query, { limit: 20, maxLimit: 500 });
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
     const params: unknown[] = [clubIdOf(req)];
     const conditions: string[] = ['b.club_id = $1', 'b.deleted_at IS NULL'];
 
@@ -66,7 +72,7 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
     if (to)      { params.push(to);      conditions.push(`b.start_time <= $${params.length}`); }
 
     const where = conditions.join(' AND ');
-    params.push(parseInt(limit), offset);
+    params.push(limit, offset);
 
     const { rows } = await db.query(
       `SELECT b.*,
@@ -96,7 +102,7 @@ export async function listBookings(req: Request, res: Response, next: NextFuncti
       ? rows.map((r) => { const copy = { ...r }; delete copy.admin_notes; return copy; })
       : rows;
 
-    res.json({ data, page: parseInt(page), limit: parseInt(limit) });
+    res.json({ data, page, limit });
   } catch (err) { next(err); }
 }
 
@@ -107,7 +113,8 @@ export async function getFinancialSummary(req: Request, res: Response, next: Nex
   try {
     // Accept optional ?from=YYYY-MM-DD&to=YYYY-MM-DD; default = today in Africa/Cairo
     const tz = 'Africa/Cairo';
-    const { from, to } = req.query as Record<string, string>;
+    const from = parseDateParam(req.query.from, 'from');
+    const to   = parseDateParam(req.query.to, 'to');
 
     // ── Logical business-day grouping ──────────────────────────────
     // The operational shift runs from 12:00 PM (noon) to 06:00 AM the
@@ -221,8 +228,7 @@ export async function createBookingHandler(req: Request, res: Response, next: Ne
     const customerId     = parsed.customerId      ?? parsed.customer_id;
     const startTime      = parsed.startTime       ?? parsed.start_time;
     const durationMinutes = parsed.durationMinutes ?? parsed.duration_minutes;
-    const notes          = parsed.notes;
-    
+
     const { sub: userId, role } = req.user!;
 
     if (!courtId)        throw new ValidationError('courtId (or court_id) is required');

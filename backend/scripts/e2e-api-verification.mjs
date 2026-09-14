@@ -3,8 +3,25 @@
  * Exercises: auth, availability grid, customer booking with payment payload,
  * receipt upload (+negative cases), staff receipt view, deposit verification,
  * and regression checks on staff booking + financial summary.
+ *
+ * Runs through Nginx by default (matching real production routing) rather
+ * than the backend directly — Docker doesn't publish the API's port outside
+ * the compose network, so a hardcoded http://localhost:4000 could only ever
+ * work when run from inside the api container. Override with API_BASE_URL to
+ * target a different environment (staging, CI, etc).
  */
-const BASE = 'http://localhost:4000/api';
+const BASE = process.env.API_BASE_URL ?? 'https://localhost/api';
+
+// The docker-compose Nginx cert is a self-signed local dev cert. Skip TLS
+// verification ONLY for this throwaway CLI script's own process, and ONLY
+// when the target is explicitly local (never for a real remote BASE) — this
+// has no effect on the actual application containers, whose own TLS/SSL
+// handling (resolveSsl() in database/client.ts, Nginx's real cert in
+// production) is entirely separate from this script's env.
+if (/^https:\/\/(localhost|127\.0\.0\.1)(:|\/)/.test(BASE) && process.env.NODE_TLS_REJECT_UNAUTHORIZED === undefined) {
+  console.warn('⚠️  Local target with a self-signed cert detected — disabling TLS verification for this script run only.\n');
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
 const ts = Date.now();
 const CUSTOMER = { email: `e2e_cust_${ts}@test.local`, password: 'Str0ng!Pass1234', firstName: 'E2E', lastName: 'Customer', phone: `0100${String(ts).slice(-7)}` };
 const STAFF    = { email: `e2e_staff_${ts}@test.local`, password: 'Str0ng!Pass1234', firstName: 'E2E', lastName: 'Staff', phone: `0101${String(ts).slice(-7)}` };

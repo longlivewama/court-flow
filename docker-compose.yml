@@ -62,7 +62,13 @@ services:
         condition: service_healthy
     env_file: ./backend/.env
     environment:
-      NODE_ENV:     development
+      # Hardcoding this to `development` would force resolveSsl() (see
+      # database/client.ts) to disable Postgres TLS verification unconditionally
+      # — including for a real deployment that reuses this compose file with
+      # production secrets injected via NODE_ENV. Defaulting (not hardcoding)
+      # preserves today's local-dev behavior while letting production actually
+      # set NODE_ENV=production and get real TLS enforcement.
+      NODE_ENV:     ${NODE_ENV:-development}
       DATABASE_URL: postgresql://courtflow:${POSTGRES_PASSWORD:-courtflow_pass}@postgres:5432/courtflow
       # backend/.env points this at 127.0.0.1 (host-oriented); inside the container it must target the postgres service
       DATABASE_URL_AUDIT: postgresql://audit_writer:${AUDIT_DB_PASSWORD:-CHANGE_IN_PRODUCTION}@postgres:5432/courtflow?sslmode=disable

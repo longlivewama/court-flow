@@ -51,21 +51,20 @@ export default function VerifyPage() {
   const [rejectDialog, setRejectDialog] = useState<{ bookingId: string } | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
 
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await api.get('/bookings?status=pending_verification&limit=50');
-      setBookings(data.data ?? data);
-    } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { message?: string } } };
-      setError(axErr?.response?.data?.message ?? 'Failed to load pending verifications.');
-    } finally { setLoading(false); }
+  function load() {
+    return api.get('/bookings?status=pending_verification&limit=50')
+      .then(({ data }) => setBookings(data.data ?? data))
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setError(axErr?.response?.data?.message ?? 'Failed to load pending verifications.');
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
 
   async function handleApprove(booking: PendingBooking) {
+    if (processing) return; // guards against a duplicate mutation from a double-click
     // Guard: a booking with no payment row has nothing to verify. Fire a clear
     // message instead of a request that would 404 ("Payment not found") in the
     // console. This mirrors the backend's 400 guard as a first line of defense.
@@ -87,6 +86,7 @@ export default function VerifyPage() {
   }
 
   async function handleReject(bookingId: string) {
+    if (processing) return; // guards against a duplicate mutation from a double-click
     setProcessing(bookingId);
     setActionError('');
     try {

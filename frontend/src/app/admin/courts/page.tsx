@@ -41,36 +41,73 @@ export default function CourtsPage() {
   const [form, setForm]         = useState<CourtForm>(EMPTY_FORM);
   const [saving, setSaving]     = useState(false);
 
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await api.get('/courts');
-      setCourts(data);
-    } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { message?: string } } };
-      setError(axErr?.response?.data?.message ?? 'Failed to load courts.');
-    } finally { setLoading(false); }
+  // Bare fetch (no leading synchronous setState) so the mount effect below
+  // can call it directly; load() adds the loading/error reset around it for
+  // the create/edit/delete event handlers that re-trigger a refetch.
+  function fetchCourts() {
+    return api.get('/courts')
+      .then(({ data }) => setCourts(data))
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setError(axErr?.response?.data?.message ?? 'Failed to load courts.');
+      })
+      .finally(() => setLoading(false));
   }
 
-  useEffect(() => { load(); }, []);
+  function load() {
+    setLoading(true);
+    setError('');
+    return fetchCourts();
+  }
 
-  function openCreate() { setEditing(null); setForm(EMPTY_FORM); setShowForm(true); }
+  useEffect(() => { fetchCourts(); }, []);
+
+  function openCreate() { setEditing(null); setForm(EMPTY_FORM); setError(''); setShowForm(true); }
   function openEdit(c: Court) {
     setEditing(c);
     setForm({ name: c.name, number: String(c.number), description: c.description ?? '', pricePerSlot: String(c.price_per_slot), status: c.status });
+    setError('');
     setShowForm(true);
   }
 
   async function save() {
+    if (saving) return; // guards against a duplicate mutation from a double-click
+    setError('');
+
+    const name = form.name.trim();
+    if (!name) { setError('Court name is required.'); return; }
+
+    // Empty input is invalid/missing, never NaN: parseFloat('') is NaN, and
+    // JSON.stringify(NaN) silently becomes `null` on the wire, which would
+    // otherwise sail past a naive backend check. Validate here so a blank
+    // price field never leaves the browser.
+    const price = form.pricePerSlot.trim() === '' ? NaN : parseFloat(form.pricePerSlot);
+    if (!Number.isFinite(price) || price <= 0) {
+      setError('Price per slot must be a positive number.');
+      return;
+    }
+
+    // Court number is genuinely optional (blank = "auto-assign the next
+    // number" on create) — so unlike price, blank here must be OMITTED from
+    // the payload entirely, never sent as null/NaN, or the backend's
+    // required-shape validation would reject the auto-assign case outright.
+    let number: number | undefined;
+    if (form.number.trim() !== '') {
+      const parsed = parseInt(form.number, 10);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        setError('Court number must be a positive whole number.');
+        return;
+      }
+      number = parsed;
+    }
+
     setSaving(true);
     try {
-      const payload = {
-        name: form.name, number: parseInt(form.number),
-        description: form.description,
-        pricePerSlot: parseFloat(form.pricePerSlot),
-        status: form.status,
+      const payload: Record<string, unknown> = {
+        name, description: form.description, pricePerSlot: price, status: form.status,
       };
+      if (number !== undefined) payload.number = number;
+
       if (editing) {
         await api.patch(`/courts/${editing.id}`, payload);
       } else {
@@ -259,6 +296,15 @@ export default function CourtsPage() {
                     </select>
                   </div>
                 </div>
+
+                {error && (
+                  <div style={{
+                    background: 'var(--error-bg, rgba(239,68,68,0.08))', border: '1px solid var(--error, #ef4444)',
+                    borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--error, #ef4444)',
+                  }} role="alert">
+                    ⚠️ {error}
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
                   <button className="btn btn-ghost btn-sm" onClick={() => setShowForm(false)}>Cancel</button>

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
+import type { AxiosError } from 'axios';
 import { api } from '@/lib/api';
 
 const SPRING = { type: 'spring' as const, stiffness: 360, damping: 28 };
@@ -32,6 +33,7 @@ export default function RegisterPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return; // guards against a duplicate submit (e.g. rapid Enter presses)
     setError('');
     setMessage('');
 
@@ -53,7 +55,7 @@ export default function RegisterPage() {
       setMessage(data.message ?? 'Registration successful. Please verify your email.');
       window.setTimeout(() => router.push('/verify-email'), 1500);
     } catch (err: unknown) {
-      const msg = (err as any)?.response?.data?.message ?? 'Registration failed. Please try again.';
+      const msg = (err as AxiosError<{ message?: string }>)?.response?.data?.message ?? 'Registration failed. Please try again.';
       setError(msg);
     } finally {
       setLoading(false);

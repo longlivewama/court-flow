@@ -1,8 +1,9 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { use, useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
+import type { AxiosError } from 'axios';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { format } from 'date-fns';
@@ -286,8 +287,9 @@ function SettleForm({ booking, onSuccess }: SettleFormProps) {
       });
       setFeedback({ type: 'ok', msg: 'Payment settled successfully!' });
       setTimeout(() => onSuccess(), 800);
-    } catch (err: any) {
-      setFeedback({ type: 'err', msg: err?.response?.data?.message ?? 'Settlement failed. Please retry.' });
+    } catch (err) {
+      const msg = (err as AxiosError<{ message?: string }>)?.response?.data?.message;
+      setFeedback({ type: 'err', msg: msg ?? 'Settlement failed. Please retry.' });
     } finally {
       setLoading(false);
     }
@@ -608,8 +610,9 @@ function ReceiptUploadForm({ bookingId, status, onSuccess }: ReceiptUploadFormPr
       setFeedback({ type: 'ok', msg: 'Receipt uploaded successfully. Awaiting verification.' });
       setFile(null);
       setTimeout(() => onSuccess(), 900);
-    } catch (err: any) {
-      setFeedback({ type: 'err', msg: err?.response?.data?.message ?? 'Upload failed. Please retry.' });
+    } catch (err) {
+      const msg = (err as AxiosError<{ message?: string }>)?.response?.data?.message;
+      setFeedback({ type: 'err', msg: msg ?? 'Upload failed. Please retry.' });
     } finally {
       setUploading(false);
     }
@@ -719,8 +722,8 @@ function DeleteBookingCard({ bookingId }: { bookingId: string }) {
     try {
       await api.delete(`/bookings/${bookingId}`, { data: { reason } });
       router.push('/bookings');
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? 'Deletion failed. Please retry.');
+    } catch (err) {
+      setError((err as AxiosError<{ message?: string }>)?.response?.data?.message ?? 'Deletion failed. Please retry.');
       setDeleting(false);
     }
   }
@@ -823,25 +826,28 @@ export default function BookingDetailsPage({ params }: { params: Promise<{ id: s
 
   const isStaff = user?.role === 'owner' || user?.role === 'receptionist';
 
-  async function loadBooking() {
-    try {
-      const { data } = await api.get(`/bookings/${id}`);
-      setBooking(data.data ?? data);
-      setNotFound(false);
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 404) {
-        setError('This booking has been deleted or no longer exists.');
-        setNotFound(true);
-      } else {
-        setError(err?.response?.data?.message ?? 'Failed to load booking details.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
+  // A .then/.catch/.finally chain (rather than async/await) so every state
+  // update here runs inside a promise callback, not synchronously in the
+  // function's own call frame — this is what lets the effect below call it
+  // directly without React flagging a synchronous setState-in-effect.
+  const loadBooking = useCallback(() => {
+    return api.get(`/bookings/${id}`)
+      .then(({ data }) => {
+        setBooking(data.data ?? data);
+        setNotFound(false);
+      })
+      .catch((err: AxiosError<{ message?: string }>) => {
+        if (err?.response?.status === 404) {
+          setError('This booking has been deleted or no longer exists.');
+          setNotFound(true);
+        } else {
+          setError(err?.response?.data?.message ?? 'Failed to load booking details.');
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [id]);
 
-  useEffect(() => { loadBooking(); }, [id]);
+  useEffect(() => { loadBooking(); }, [loadBooking]);
 
   // Auto-redirect to bookings list when the booking is not found
   useEffect(() => {

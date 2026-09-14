@@ -6,7 +6,7 @@ import { Express, Router } from 'express';
 import {
   authenticate, requireRole,
   loginLimiter, registerLimiter, passwordLimiter, uploadLimiter,
-  refreshLimiter, verifyEmailLimiter, webhookLimiter,
+  refreshLimiter, verifyEmailLimiter, webhookLimiter, forgotPasswordLimiter,
 } from './middleware/auth.middleware';
 import { requireTenant, requireClubResource, requirePermission } from './middleware/tenant.middleware';
 
@@ -39,6 +39,8 @@ export function registerRoutes(app: Express): void {
   auth.post('/register-club', registerLimiter, authCtrl.registerClub);
   auth.post('/verify-email',  verifyEmailLimiter, authCtrl.verifyEmail);
   auth.post('/login',         loginLimiter, authCtrl.login);
+  auth.post('/forgot-password', forgotPasswordLimiter, authCtrl.forgotPassword);
+  auth.post('/reset-password',  passwordLimiter, authCtrl.resetPassword);
   auth.post('/refresh',       refreshLimiter, authCtrl.refresh);
   auth.post('/logout',        authenticate, authCtrl.logout);
   app.use('/api/auth', auth);

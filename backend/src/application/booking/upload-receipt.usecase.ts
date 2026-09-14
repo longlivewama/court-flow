@@ -6,7 +6,6 @@
 import { withTransaction } from '../../infrastructure/database/client';
 import { encryptAndStore } from '../../infrastructure/auth/encryption.service';
 import { assertTransition } from '../../domain/booking/booking.state-machine';
-import { assertPaymentTransition } from '../../domain/booking/booking.state-machine';
 import { auditLog, AUDIT_ACTIONS } from '../../infrastructure/audit/audit.service';
 import { ValidationError, NotFoundError } from '../../shared/errors';
 

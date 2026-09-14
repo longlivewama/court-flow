@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { CommandMenu } from './CommandMenu';
 import { Sidebar } from './Sidebar';
 import { useAuthStore } from '@/lib/stores/auth.store';
+import { useHasMounted } from '@/lib/useHasMounted';
 import { Command } from 'lucide-react';
 
 interface AppShellProps {
@@ -31,8 +32,7 @@ export function AppShell({ children }: AppShellProps) {
 
   // Wait for the persisted auth store to rehydrate on the client before judging
   // the session, so we neither mismatch SSR nor redirect on a transient null.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const mounted = useHasMounted();
 
   const segment = (pathname ?? '').split('/')[1] ?? '';
   const roleBlocked =

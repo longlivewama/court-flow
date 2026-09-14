@@ -97,8 +97,16 @@ export default function CalendarPage() {
       .catch(() => { /* fall back to DEFAULT_OPEN_HOUR */ });
   }, []);
 
-  const load = useCallback(() => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as load's
+  // own leading synchronous setState call.
+  const [prevWeekStart, setPrevWeekStart] = useState(weekStart.getTime());
+  if (weekStart.getTime() !== prevWeekStart) {
+    setPrevWeekStart(weekStart.getTime());
     setLoading(true);
+  }
+
+  const load = useCallback(() => {
     const from = weekStart.toISOString();
     const to   = addDays(weekStart, 7).toISOString();
     api.get(`/bookings?from=${from}&to=${to}&limit=500`)

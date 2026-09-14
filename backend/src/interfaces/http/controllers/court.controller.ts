@@ -9,36 +9,59 @@ import { withTransaction } from '../../../infrastructure/database/client';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../../../infrastructure/cache/redis.client';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
-import { addMinutes, startOfDay, endOfDay } from 'date-fns';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { z } from 'zod';
 
 const TIMEZONE  = 'Africa/Cairo';
 
-// Validation schemas — mirror createCourt's guards so an UPDATE can never
-// write a non-positive price, empty name, or out-of-range club setting that
-// downstream pricing/expiry logic trusts as sane.
+// Validation schemas — createCourt and courtUpdateSchema share the same
+// numeric guards so neither a CREATE nor an UPDATE can ever write a
+// non-positive/non-finite price, empty name, or out-of-range club setting
+// that downstream pricing/expiry logic trusts as sane.
 const COURT_STATUSES = ['available', 'closed', 'maintenance', 'reserved_club_event', 'reserved_tournament'] as const;
 
+// `.finite()` matters even though `.positive()` already excludes -Infinity:
+// z.number().positive() alone still accepts +Infinity (Infinity > 0 is true).
+// Without it, a client can PATCH/POST a court's price to Infinity — a valid
+// JSON number literal via overflow (e.g. 1e400) — which Postgres numeric
+// happily stores, corrupting every downstream price calculation for that court.
 const courtUpdateSchema = z.object({
   name:         z.string().trim().min(1).max(100).optional(),
   number:       z.number().int().positive().optional(),
   description:  z.string().trim().max(500).nullable().optional(),
-  pricePerSlot: z.number().positive().optional(),
+  pricePerSlot: z.number().finite().positive().optional(),
   status:       z.enum(COURT_STATUSES).optional(),
 });
 
+// createCourt's own schema: name and pricePerSlot are required (there's no
+// existing row to fall back to); number stays optional — omitting it means
+// "auto-assign the next number" (see createCourt below).
+const courtCreateSchema = z.object({
+  name:         z.string().trim().min(1, 'Court name is required').max(100),
+  number:       z.number().int('Court number must be a whole number').positive('Court number must be positive').optional(),
+  description:  z.string().trim().max(500).nullable().optional(),
+  pricePerSlot: z.number().finite().positive('pricePerSlot must be a positive number'),
+  status:       z.enum(COURT_STATUSES).optional(),
+});
+
+// Club settings DTO — field names match the `clubs` table columns exactly,
+// and this is the SAME shape returned by GET /api/settings (see
+// getClubSettings below), so there is exactly one settings contract instead
+// of the frontend's UI field names (club_name, contact_email, ...) getting
+// silently guessed at. `deposit_percent`'s range mirrors the DB CHECK
+// constraint (>= 10 AND <= 100) — a value the DB would reject must never
+// pass this schema and reach the database as a raw, unhandled 500.
 const clubSettingsSchema = z.object({
-  depositPercent:              z.number().min(0).max(100).optional(),
-  cancellationDeadlineHours:   z.number().int().min(0).max(8760).optional(),
-  pendingDepositExpiryMinutes: z.number().int().min(1).max(10080).optional(),
-  noshowGraceMinutes:          z.number().int().min(0).max(1440).optional(),
-  reminder24hEnabled:          z.boolean().optional(),
-  reminder2hEnabled:           z.boolean().optional(),
-  name:                        z.string().trim().min(1).max(255).optional(),
-  email:                       z.string().trim().max(255).optional(),
-  phone:                       z.string().trim().max(50).optional(),
-  address:                     z.string().trim().max(1000).optional(),
+  name:                           z.string().trim().min(1).max(255).optional(),
+  email:                          z.string().trim().max(255).optional(),
+  phone:                          z.string().trim().max(50).optional(),
+  address:                        z.string().trim().max(1000).optional(),
+  deposit_percent:                z.number().min(10).max(100).optional(),
+  cancellation_deadline_hours:    z.number().int().min(0).max(8760).optional(),
+  pending_deposit_expiry_minutes: z.number().int().min(1).max(10080).optional(),
+  noshow_grace_minutes:           z.number().int().min(0).max(1440).optional(),
+  reminder_24h_enabled:           z.boolean().optional(),
+  reminder_2h_enabled:            z.boolean().optional(),
 });
 
 // ── GET /api/courts ───────────────────────────────────────────
@@ -77,31 +100,39 @@ export async function getCourt(req: Request, res: Response, next: NextFunction):
 // ── POST /api/courts (owner only) ────────────────────────────
 export async function createCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { name, description, pricePerSlot, status } = req.body;
-    let { number } = req.body;
-
-    // Validate required fields up-front for a clean 400 error
-    if (!name || name.trim() === '') {
-      throw new ValidationError('Court name is required');
-    }
-    if (pricePerSlot === undefined || pricePerSlot === null || Number(pricePerSlot) <= 0) {
-      throw new ValidationError('pricePerSlot must be a positive number');
-    }
+    // Explicit Number.isInteger/Number.isFinite-backed validation (via zod) —
+    // NaN, Infinity, decimals, negatives, and non-numeric strings must all be
+    // rejected with a clean 400 here, never reach the database (a raw
+    // Postgres syntax/overflow error would otherwise surface as a 500, or
+    // worse, Infinity/NaN would silently persist — Postgres numeric accepts
+    // both as literal values).
+    const { name, number, description, pricePerSlot, status } = courtCreateSchema.parse(req.body);
 
     // Auto-assign the next court number if the caller didn't provide one
-    if (number === undefined || number === null) {
+    let courtNumber = number;
+    if (courtNumber === undefined) {
       const { rows: maxRows } = await db.query<{ max_number: number | null }>(
         `SELECT COALESCE(MAX(number), 0) AS max_number FROM courts WHERE club_id = $1`,
         [clubIdOf(req)]
       );
-      number = (maxRows[0]?.max_number ?? 0) + 1;
+      courtNumber = (maxRows[0]?.max_number ?? 0) + 1;
     }
 
-    const { rows } = await db.query(
-      `INSERT INTO courts (club_id, name, number, description, price_per_slot, status)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [clubIdOf(req), name.trim(), number, description?.trim() ?? null, Number(pricePerSlot), status ?? 'available']
-    );
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `INSERT INTO courts (club_id, name, number, description, price_per_slot, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [clubIdOf(req), name, courtNumber, description ?? null, pricePerSlot, status ?? 'available']
+      ));
+    } catch (err: unknown) {
+      // courts_club_id_number_key (unique on club_id, number) — a raw 23505
+      // must never surface as an opaque 500; translate to a clean conflict.
+      if ((err as { code?: string } | null)?.code === '23505') {
+        throw new ConflictError(`Court number ${courtNumber} is already in use.`);
+      }
+      throw err;
+    }
     await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
     await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       ipAddress: req.ip, actionType: AUDIT_ACTIONS.COURT_CREATED,
@@ -117,13 +148,21 @@ export async function updateCourt(req: Request, res: Response, next: NextFunctio
     const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, clubIdOf(req)]);
     if (!old.length) throw new NotFoundError('Court', req.params.id);
 
-    const { rows } = await db.query(
-      `UPDATE courts SET name=COALESCE($2,name), number=COALESCE($3,number),
-       description=COALESCE($4,description), price_per_slot=COALESCE($5,price_per_slot),
-       status=COALESCE($6,status), updated_at=NOW()
-       WHERE id=$1 AND club_id=$7 RETURNING *`,
-      [req.params.id, name, number, description, pricePerSlot, status, clubIdOf(req)]
-    );
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `UPDATE courts SET name=COALESCE($2,name), number=COALESCE($3,number),
+         description=COALESCE($4,description), price_per_slot=COALESCE($5,price_per_slot),
+         status=COALESCE($6,status), updated_at=NOW()
+         WHERE id=$1 AND club_id=$7 RETURNING *`,
+        [req.params.id, name, number, description, pricePerSlot, status, clubIdOf(req)]
+      ));
+    } catch (err: unknown) {
+      if ((err as { code?: string } | null)?.code === '23505') {
+        throw new ConflictError(`Court number ${number} is already in use.`);
+      }
+      throw err;
+    }
     await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
     await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.COURT_UPDATED, entityType: 'court', entityId: req.params.id,
@@ -165,12 +204,17 @@ export async function getCourtAvailability(req: Request, res: Response, next: Ne
       [clubIdOf(req), dayOfWeek]
     );
 
-    // Get existing confirmed bookings for this court on this day
+    // Get existing confirmed bookings for this court on this day. Half-open
+    // interval overlap (existing.start < window.end AND existing.end >
+    // window.start) — NOT a start_time-only filter — so a booking that
+    // started the day before and runs past midnight (e.g. 23:00→01:00) still
+    // shows as occupying this day's early-morning hours instead of being
+    // missed because its start_time falls outside this day's own window.
     const { rows: existing } = await db.query(
       `SELECT start_time, end_time, status FROM bookings
        WHERE court_id=$1 AND club_id=$2
          AND status IN ('confirmed','checked_in','pending_verification','pending_deposit')
-         AND start_time >= $3 AND start_time <= $4
+         AND start_time < $4 AND end_time > $3
        ORDER BY start_time`,
       [req.params.id, clubIdOf(req), dayStartCairo.toISOString(), dayEndCairo.toISOString()]
     );
@@ -276,8 +320,8 @@ export async function getDailySchedule(req: Request, res: Response, next: NextFu
          JOIN users  u ON u.id = b.customer_id
          LEFT JOIN payments p ON p.booking_id = b.id
          WHERE b.club_id=$1
-           AND b.start_time >= $2
            AND b.start_time <  $3
+           AND b.end_time   >  $2
            AND b.status NOT IN ('cancelled','expired')
          ORDER BY b.start_time, c.number`,
         [clubIdOf(req), windowStart.toISOString(), windowEnd.toISOString()]
@@ -342,57 +386,44 @@ export async function upsertWorkingHours(req: Request, res: Response, next: Next
 // ── Club settings ─────────────────────────────────────────────
 export async function getClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { rows } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubIdOf(req)]);
+    const clubId = clubIdOf(req);
+    const { rows } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubId]);
+    if (!rows.length) throw new NotFoundError('Club', clubId);
     res.json(rows[0]);
   } catch (err) { next(err); }
 }
 
 export async function updateClubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    // Accept both camelCase (API convention) and the admin settings page's
-    // snake_case field names (club_name, contact_email, contact_phone,
-    // cancellation_cutoff_hrs, deposit_percentage) — same dual-naming pattern
-    // used for bookings in booking.controller.ts.
-    const body = req.body ?? {};
-    // Coerce blank/absent fields to undefined so they're skipped (COALESCE keeps
-    // the current value); everything supplied is range-validated by the schema.
-    const numOrUndef = (v: unknown) => (v === undefined || v === null || v === '' ? undefined : Number(v));
-    const strOrUndef = (v: unknown) => (v === undefined || v === null ? undefined : String(v));
+    const dto = clubSettingsSchema.parse(req.body ?? {});
+    const clubId = clubIdOf(req);
 
-    const {
-      depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
-      reminder24hEnabled, reminder2hEnabled, name, email, phone, address,
-    } = clubSettingsSchema.parse({
-      depositPercent:              numOrUndef(body.depositPercent ?? body.deposit_percentage),
-      cancellationDeadlineHours:   numOrUndef(body.cancellationDeadlineHours ?? body.cancellation_cutoff_hrs),
-      pendingDepositExpiryMinutes: numOrUndef(body.pendingDepositExpiryMinutes ?? body.pending_deposit_expiry_minutes),
-      noshowGraceMinutes:          numOrUndef(body.noshowGraceMinutes ?? body.noshow_grace_minutes),
-      reminder24hEnabled:          body.reminder24hEnabled ?? body.reminder_24h_enabled,
-      reminder2hEnabled:           body.reminder2hEnabled ?? body.reminder_2h_enabled,
-      name:                        strOrUndef(body.name ?? body.club_name),
-      email:                       strOrUndef(body.email ?? body.contact_email),
-      phone:                       strOrUndef(body.phone ?? body.contact_phone),
-      address:                     strOrUndef(body.address),
-    });
+    const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubId]);
+    if (!old.length) throw new NotFoundError('Club', clubId);
 
-    const { rows: old } = await db.query(`SELECT * FROM clubs WHERE id=$1`, [clubIdOf(req)]);
+    // Every field is optional in the DTO; an omitted key resolves to
+    // `undefined` here, which node-pg binds as SQL NULL, so COALESCE leaves
+    // that column untouched. A field the caller DID supply — including an
+    // explicit empty string for name/email/phone/address — always wins.
+    // Single UPDATE statement: inherently atomic, no explicit transaction needed.
     const { rows } = await db.query(
       `UPDATE clubs SET
-         deposit_percent=COALESCE($2,deposit_percent),
-         cancellation_deadline_hours=COALESCE($3,cancellation_deadline_hours),
-         pending_deposit_expiry_minutes=COALESCE($4,pending_deposit_expiry_minutes),
-         noshow_grace_minutes=COALESCE($5,noshow_grace_minutes),
-         reminder_24h_enabled=COALESCE($6,reminder_24h_enabled),
-         reminder_2h_enabled=COALESCE($7,reminder_2h_enabled),
-         name=COALESCE($8,name), email=COALESCE($9,email),
-         phone=COALESCE($10,phone), address=COALESCE($11,address),
+         name=COALESCE($2,name), email=COALESCE($3,email),
+         phone=COALESCE($4,phone), address=COALESCE($5,address),
+         deposit_percent=COALESCE($6,deposit_percent),
+         cancellation_deadline_hours=COALESCE($7,cancellation_deadline_hours),
+         pending_deposit_expiry_minutes=COALESCE($8,pending_deposit_expiry_minutes),
+         noshow_grace_minutes=COALESCE($9,noshow_grace_minutes),
+         reminder_24h_enabled=COALESCE($10,reminder_24h_enabled),
+         reminder_2h_enabled=COALESCE($11,reminder_2h_enabled),
          updated_at=NOW()
        WHERE id=$1 RETURNING *`,
-      [clubIdOf(req), depositPercent, cancellationDeadlineHours, pendingDepositExpiryMinutes, noshowGraceMinutes,
-       reminder24hEnabled, reminder2hEnabled, name, email, phone, address]
+      [clubId, dto.name, dto.email, dto.phone, dto.address,
+       dto.deposit_percent, dto.cancellation_deadline_hours, dto.pending_deposit_expiry_minutes,
+       dto.noshow_grace_minutes, dto.reminder_24h_enabled, dto.reminder_2h_enabled]
     );
-    await redis.del(CACHE_KEYS.clubSettings(clubIdOf(req)));
-    await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
+    await redis.del(CACHE_KEYS.clubSettings(clubId));
+    await auditLog({ clubId, userId: req.user!.sub, userRole: 'owner',
       actionType: AUDIT_ACTIONS.SETTINGS_UPDATED, entityType: 'club',
       previousValues: old[0], newValues: rows[0] });
     res.json(rows[0]);

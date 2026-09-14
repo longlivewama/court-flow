@@ -240,7 +240,7 @@ async function runNoShowJob(): Promise<void> {
 }
 
 // ── 3. Reminder emails ────────────────────────────────────────
-async function runReminderJob(): Promise<void> {
+export async function runReminderJob(): Promise<void> {
   try {
     const { rows: clubs } = await db.query<{
       id: string;
@@ -263,13 +263,29 @@ async function runReminderJob(): Promise<void> {
   }
 }
 
-async function sendReminders(
+// Maps each reminder type to its durable "already sent" column. Built as an
+// explicit allowlist (never string-interpolating the caller's label directly
+// into SQL) even though today's two call sites are both internal literals.
+const REMINDER_SENT_COLUMN = {
+  '24h': 'reminder_24h_sent_at',
+  '2h':  'reminder_2h_sent_at',
+} as const;
+type ReminderLabel = keyof typeof REMINDER_SENT_COLUMN;
+
+export async function sendReminders(
   clubId: string,
   minutesBefore: number,
-  label: string
+  label: ReminderLabel
 ): Promise<void> {
-  // Find confirmed bookings starting in [minutesBefore-1, minutesBefore+1] minute window
-  // (cron runs every minute, so we check ±1min tolerance)
+  const sentColumn = REMINDER_SENT_COLUMN[label];
+
+  // Same ±1-minute window as before the idempotency fix (cron runs every
+  // minute) — the fix is NOT widening this window, it's that a booking sitting
+  // in it across 2-3 consecutive ticks used to get emailed every single time.
+  // The `${sentColumn} IS NULL` guard means a booking already reminded is never
+  // even selected again, and the same guard on the UPDATE below means marking
+  // "sent" only ever happens once, atomically, and only after a real send
+  // succeeds — a failed attempt leaves it eligible for the very next tick.
   const { rows: bookings } = await db.query<{
     id: string;
     customer_id: string;
@@ -281,16 +297,21 @@ async function sendReminders(
      WHERE b.club_id = $1
        AND b.status = 'confirmed'
        AND b.start_time BETWEEN NOW() + ($2 - 1 || ' minutes')::INTERVAL
-                             AND NOW() + ($2 + 1 || ' minutes')::INTERVAL`,
+                             AND NOW() + ($2 + 1 || ' minutes')::INTERVAL
+       AND b.${sentColumn} IS NULL`,
     [clubId, minutesBefore]
   );
 
   for (const booking of bookings) {
-    const { rows: custRows } = await db.query<{ email: string; first_name: string }>(
-      `SELECT email, first_name FROM users WHERE id = $1`,
-      [booking.customer_id]
-    );
-    if (custRows.length) {
+    // Isolate each booking: one failed/slow send must not block the rest of
+    // this tick's reminders, and must not falsely mark itself as sent.
+    try {
+      const { rows: custRows } = await db.query<{ email: string; first_name: string }>(
+        `SELECT email, first_name FROM users WHERE id = $1`,
+        [booking.customer_id]
+      );
+      if (!custRows.length) continue;
+
       await emailService.sendBookingReminder({
         to:        custRows[0].email,
         firstName: custRows[0].first_name,
@@ -298,6 +319,16 @@ async function sendReminders(
         startTime: booking.start_time,
         reminderType: label,
       });
+
+      // Mark sent only after the send itself succeeded, and only if nothing
+      // else has already marked it (defence in depth alongside the
+      // cluster-wide advisory lock that already serialises cron ticks).
+      await db.query(
+        `UPDATE bookings SET ${sentColumn} = NOW() WHERE id = $1 AND ${sentColumn} IS NULL`,
+        [booking.id]
+      );
+    } catch (err) {
+      logger.error({ err, bookingId: booking.id, reminderType: label }, 'Failed to send booking reminder; will retry next tick');
     }
   }
 }
