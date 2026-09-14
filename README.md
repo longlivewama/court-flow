@@ -192,6 +192,32 @@ docker-compose up --build
 > ```
 > Rebuild `api` / `frontend` after code changes: `docker-compose up --build -d api frontend`.
 
+### Production deployment
+
+The command above (`docker-compose up --build`) is for local development — it
+defaults `NODE_ENV` to `development` and every credential to a dev-only
+placeholder so it runs out of the box. A real deployment must apply
+`docker-compose.prod.yml` on top, which makes production explicit instead of
+implicit — it hardcodes `NODE_ENV=production` and requires every credential
+below to actually be set, refusing to start otherwise:
+
+```bash
+export POSTGRES_PASSWORD=...        # real secret
+export REDIS_PASSWORD=...           # real secret
+export AUDIT_DB_PASSWORD=...        # real secret — must match the audit_writer role
+export COURTFLOW_APP_DB_PASSWORD=... # real secret — must match the courtflow_app role
+# plus backend/.env: real PAYMENT_WEBHOOK_SECRET, JWT keys, SMTP/WhatsApp/Sheets creds
+# (the app itself refuses to boot in production if any of these are missing —
+# see assertWebhookSecretConfigured() and jwt.service.ts)
+
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+This also switches on `Secure` cookies (`auth.controller.ts` gates this on
+`NODE_ENV === 'production'`), enables Postgres TLS verification
+(`resolveSsl()` in `database/client.ts`), and disables the dev-only default
+owner seed (`seedDefaultOwner()` is a no-op whenever `NODE_ENV === 'production'`).
+
 ### Local development (no Docker)
 
 ```bash

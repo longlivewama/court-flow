@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "bull": "^4.16.5",
     "compression": "^1.7.5",
     "cookie-parser": "^1.4.7",
@@ -32,7 +32,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^10.0.10",
     "pdf-lib": "^1.17.1",
     "pg": "^8.13.3",
     "pino": "^9.6.0",
@@ -41,6 +41,9 @@
     "uuid": "^11.1.0",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
+  },
+  "overrides": {
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
@@ -53,7 +56,6 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^22.15.30",
     "@types/node-cron": "^3.0.11",
-    "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.11.11",
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.35.0",

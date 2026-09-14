@@ -13,6 +13,7 @@ import {
   JwtPayload,
 } from '../../../infrastructure/auth/jwt.service';
 import { redis, CACHE_KEYS } from '../../../infrastructure/cache/redis.client';
+import { runWithTenant } from '../../../shared/tenant-context';
 import {
   UnauthorizedError,
   ForbiddenError,
@@ -66,7 +67,12 @@ export async function authenticate(
     }
 
     req.user = payload;
-    next();
+    // Establishes the request's tenant for every DB call made anywhere
+    // downstream (including inside usecases several `await`s deep) — see
+    // tenant-context.ts and migration 023. `next()` must run *inside* this
+    // callback, not after it, so the AsyncLocalStorage context is active
+    // for the async continuations the rest of the request spawns.
+    await runWithTenant(payload.clubId, async () => next());
   } catch (err) {
     next(err instanceof UnauthorizedError ? err : new UnauthorizedError());
   }

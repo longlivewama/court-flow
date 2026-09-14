@@ -90,11 +90,15 @@ export async function createSubscription(
     }
 
     // Pessimistic lock on the court serialises concurrent subscription and
-    // booking creation, exactly like create-booking.usecase.ts.
-    await client.query(`SELECT id FROM courts WHERE id = $1 FOR UPDATE`, [input.courtId]);
-
+    // booking creation, exactly like create-booking.usecase.ts. club_id is
+    // part of the lock predicate itself (not a separate check afterward) —
+    // otherwise a courtId from another tenant would still take a real
+    // Postgres row lock on that foreign court (locks are per-row, not
+    // per-query-predicate) and hold it for the rest of this transaction
+    // before the tenant mismatch was ever noticed, stalling that tenant's
+    // own booking/subscription flow on the same court (CF-QA-S001).
     const { rows: courtRows } = await client.query<{ price_per_slot: string; name: string }>(
-      `SELECT price_per_slot, name FROM courts WHERE id = $1 AND club_id = $2`,
+      `SELECT price_per_slot, name FROM courts WHERE id = $1 AND club_id = $2 FOR UPDATE`,
       [input.courtId, input.clubId]
     );
     if (!courtRows.length) throw new ValidationError('Court not found');

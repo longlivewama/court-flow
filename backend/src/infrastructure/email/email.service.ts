@@ -2,7 +2,7 @@
  * Email Service – Nodemailer wrapper with template-based emails.
  * All emails are sent via SMTP; retries handled with exponential back-off.
  */
-import nodemailer from 'nodemailer';
+import nodemailer, { type SendMailOptions } from 'nodemailer';
 import { logger } from '../../shared/logger';
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
@@ -21,7 +21,7 @@ const transporter = nodemailer.createTransport({
 });
 
 async function sendWithRetry(
-  options: nodemailer.SendMailOptions,
+  options: SendMailOptions,
   attempt = 1
 ): Promise<void> {
   try {
