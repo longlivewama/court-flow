@@ -29,34 +29,40 @@ export function ReceiptViewer({ bookingId, maxHeight = 220, exists }: ReceiptVie
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
 
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      setMissing(false);
-      setUrl(null);
-      try {
-        const res = await api.get(`/bookings/${bookingId}/receipt`, { responseType: 'blob' });
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(res.data);
-        setMime(res.data.type ?? '');
-        setUrl(objectUrl);
-      } catch {
-        if (!cancelled) setMissing(true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
+  // Reset view state whenever the target booking (or its known-exists flag)
+  // changes. Adjusted synchronously during render (React's documented
+  // alternative to an effect for "reset state when a prop changes") so this
+  // isn't a synchronous setState call inside the fetch effect below.
+  const resetKey = `${bookingId}:${exists}`;
+  const [prevResetKey, setPrevResetKey] = useState(resetKey);
+  if (resetKey !== prevResetKey) {
+    setPrevResetKey(resetKey);
     if (exists === false) {
       setLoading(false);
       setMissing(true);
       setUrl(null);
     } else {
-      load();
+      setLoading(true);
+      setMissing(false);
+      setUrl(null);
     }
+  }
+
+  useEffect(() => {
+    if (exists === false) return; // No receipt to fetch — the reset above already covers this case.
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    api.get(`/bookings/${bookingId}/receipt`, { responseType: 'blob' })
+      .then((res) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(res.data);
+        setMime(res.data.type ?? '');
+        setUrl(objectUrl);
+      })
+      .catch(() => { if (!cancelled) setMissing(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
     return () => {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);

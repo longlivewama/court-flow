@@ -7,7 +7,7 @@
  *   · Review customer claim requests, approve or reject them
  *   · Mark items as returned once picked up
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, X, Check, Camera, MapPin, Clock, PackageSearch, Undo2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { AuthImage } from '@/components/AuthImage';
@@ -54,7 +54,6 @@ export default function StaffLostFoundPage() {
     foundAt: new Date().toISOString().slice(0, 16),
   });
   const [photo, setPhoto]           = useState<File | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
 
   const [claimsFor, setClaimsFor]   = useState<string | null>(null);
   const [claims, setClaims]         = useState<ClaimRow[]>([]);
@@ -78,12 +77,14 @@ export default function StaffLostFoundPage() {
       .catch(() => { /* court select is optional */ });
   }, [loadItems]);
 
+  // Derived directly from `photo` (URL.createObjectURL isn't idempotent, but
+  // it's cheap and not on React's impure-function denylist, so memoizing it
+  // during render is fine) rather than mirrored into its own state + effect
+  // — only the blob URL's cleanup needs an actual effect.
+  const photoPreview = useMemo(() => (photo ? URL.createObjectURL(photo) : null), [photo]);
   useEffect(() => {
-    if (!photo) { setPhotoPreview(null); return; }
-    const url = URL.createObjectURL(photo);
-    setPhotoPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
+    return () => { if (photoPreview) URL.revokeObjectURL(photoPreview); };
+  }, [photoPreview]);
 
   function apiError(err: unknown, fallback: string): string {
     const e = err as { response?: { data?: { message?: string; error?: { message?: string } } } };

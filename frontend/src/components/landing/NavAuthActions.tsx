@@ -6,15 +6,21 @@
  * the persisted profile and self-corrects via the refresh interceptor.
  */
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { ArrowRight } from 'lucide-react';
 
-export function NavAuthActions() {
-  const [authed, setAuthed] = useState(false);
+const noopSubscribe = () => () => {};
 
-  useEffect(() => {
-    setAuthed(!!localStorage.getItem('cf_user'));
-  }, []);
+export function NavAuthActions() {
+  // Reads a client-only source (localStorage), so this must stay false
+  // during SSR/first paint (getServerSnapshot) — useSyncExternalStore keeps
+  // that read out of the render body's own purity concerns without needing
+  // a setState-in-effect to flip it after mount.
+  const authed = useSyncExternalStore(
+    noopSubscribe,
+    () => !!localStorage.getItem('cf_user'),
+    () => false
+  );
 
   return (
     <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>

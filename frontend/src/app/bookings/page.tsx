@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { StateChip, BookingStatus } from '@/components/StateChip';
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
-import { Filter, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 const TIMEZONE = 'Africa/Cairo';
@@ -38,20 +38,27 @@ export default function BookingsPage() {
   const [page, setPage] = useState(1);
   const router = useRouter();
 
-  const load = useCallback(async () => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as load's
+  // own leading synchronous setState calls.
+  const loadKey = `${page}:${statusFilter}`;
+  const [prevLoadKey, setPrevLoadKey] = useState(loadKey);
+  if (loadKey !== prevLoadKey) {
+    setPrevLoadKey(loadKey);
     setLoading(true);
     setError('');
-    try {
-      const params = new URLSearchParams({ page: String(page), limit: '25' });
-      if (statusFilter) params.set('status', statusFilter);
-      const { data } = await api.get(`/bookings?${params}`);
-      setBookings(data.data ?? data);
-    } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { message?: string } } };
-      setError(axErr?.response?.data?.message ?? 'Failed to load bookings.');
-    } finally {
-      setLoading(false);
-    }
+  }
+
+  const load = useCallback(() => {
+    const params = new URLSearchParams({ page: String(page), limit: '25' });
+    if (statusFilter) params.set('status', statusFilter);
+    return api.get(`/bookings?${params}`)
+      .then(({ data }) => setBookings(data.data ?? data))
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setError(axErr?.response?.data?.message ?? 'Failed to load bookings.');
+      })
+      .finally(() => setLoading(false));
   }, [page, statusFilter]);
 
   useEffect(() => { load(); }, [load]);

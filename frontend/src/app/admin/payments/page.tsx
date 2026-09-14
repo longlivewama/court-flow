@@ -68,9 +68,18 @@ export default function PaymentsPage() {
 
   const LIMIT = 25;
 
-  const load = useCallback(() => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as load's
+  // own leading synchronous setState calls.
+  const loadKey = `${filter}:${page}:${query}`;
+  const [prevLoadKey, setPrevLoadKey] = useState(loadKey);
+  if (loadKey !== prevLoadKey) {
+    setPrevLoadKey(loadKey);
     setLoading(true);
     setError('');
+  }
+
+  const load = useCallback(() => {
     const params = new URLSearchParams({ status: filter, page: String(page), limit: String(LIMIT) });
     if (query) params.set('search', query);
     api.get(`/payments?${params}`)

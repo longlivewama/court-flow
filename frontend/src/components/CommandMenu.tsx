@@ -9,7 +9,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useRouter } from 'next/navigation';
 import {
   Search, UserCheck, CreditCard, Calendar, BarChart2,
-  Users, Settings, FileText, LogOut, Moon, Zap,
+  Users, Settings, FileText, LogOut, Zap,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/stores/auth.store';
 
@@ -24,7 +24,6 @@ interface Command {
 }
 
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 };
-const FADE_IN = { opacity: [0, 1], transition: { duration: 0.12 } };
 
 interface CommandMenuProps {
   open:    boolean;
@@ -126,17 +125,34 @@ export function CommandMenu({ open, onClose }: CommandMenuProps) {
 
   const flatFiltered = Object.values(groups).flat();
 
-  useEffect(() => {
+  // Reset the palette each time it opens. Adjusted synchronously during
+  // render (React's documented alternative to an effect for "reset state
+  // when a prop changes") since the menu stays mounted between opens for its
+  // exit animation, so a key-based remount isn't an option. Focusing the
+  // input is a genuine DOM side effect (not a state update) so it stays in
+  // its own effect below.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       setQuery('');
       setSelected(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }
+
+  useEffect(() => {
+    if (open) {
+      const t = setTimeout(() => inputRef.current?.focus(), 50);
+      return () => clearTimeout(t);
     }
   }, [open]);
 
-  useEffect(() => {
+  // Re-adjusted the same way whenever the search query changes.
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (query !== prevQuery) {
+    setPrevQuery(query);
     setSelected(0);
-  }, [query]);
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {

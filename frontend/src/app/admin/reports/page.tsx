@@ -5,11 +5,9 @@
  * Supports PDF, Excel, and CSV formats.
  */
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { BarChart2, Download, FileText, Table } from 'lucide-react';
 import { api } from '@/lib/api';
-
-const SPRING = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
 const REPORT_TYPES = [
   { value: 'daily_revenue',       label: 'Daily Revenue',       desc: 'Revenue breakdown for a specific date' },

@@ -75,23 +75,31 @@ export function NewBookingPanel({ open, onClose, onCreated, initialCourtId, init
   const [done, setDone]             = useState(false);
 
   // Reset the form each time the panel opens (optionally pre-filled from a
-  // clicked calendar slot).
-  useEffect(() => {
-    if (!open) return;
-    setError('');
-    setDone(false);
-    setNotes('');
-    setEquipmentQty({});
-    setEquipmentTotal(0);
-    setRepeat(false);
-    setTerm(1);
-    setHours(1);
-    if (initialStart) {
-      setDate(toDateInput(initialStart));
-      setStartHour(initialStart.getHours());
+  // clicked calendar slot). Adjusted synchronously during render (React's
+  // documented alternative to an effect for "reset state when a prop
+  // changes") rather than in a useEffect, since the panel stays mounted
+  // between opens (for its close animation) so a key-based remount isn't an
+  // option — this guards against re-firing on every render the same way an
+  // effect's dependency array would.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setError('');
+      setDone(false);
+      setNotes('');
+      setEquipmentQty({});
+      setEquipmentTotal(0);
+      setRepeat(false);
+      setTerm(1);
+      setHours(1);
+      if (initialStart) {
+        setDate(toDateInput(initialStart));
+        setStartHour(initialStart.getHours());
+      }
+      if (initialCourtId) setCourtId(initialCourtId);
     }
-    if (initialCourtId) setCourtId(initialCourtId);
-  }, [open, initialStart, initialCourtId]);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -131,6 +139,7 @@ export function NewBookingPanel({ open, onClose, onCreated, initialCourtId, init
   );
 
   async function submit() {
+    if (submitting) return; // guards against a duplicate mutation from a double-click
     setError('');
     if (!courtId) return setError('Select a court');
     if (isStaff && !customerId) return setError('Select a member for this booking');

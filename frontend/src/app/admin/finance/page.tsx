@@ -35,6 +35,7 @@ interface Financials {
     revenue: {
       bookings: number; tournaments: number; training: number; total: number;
       forfeitedDeposits?: number;
+      bookingsGross?: number; refundsDeductedFromBookings?: number;
       rentalsWithinBookings: number; rentalsPreviousPeriod: number;
     };
     costs: { operatingExpenses: number; coachPayouts: number; total: number };
@@ -116,8 +117,16 @@ export default function FinancePage() {
   const [error, setError]   = useState('');
   const [notice, setNotice] = useState('');
 
-  const loadFinancials = useCallback(() => {
+  // Adjusted synchronously during render (React's documented alternative to
+  // an effect for "reset state when a prop changes") rather than as
+  // loadFinancials's own leading synchronous setState call.
+  const [prevRangeDays, setPrevRangeDays] = useState(rangeDays);
+  if (rangeDays !== prevRangeDays) {
+    setPrevRangeDays(rangeDays);
     setFinLoading(true);
+  }
+
+  const loadFinancials = useCallback(() => {
     api.get(`/analytics/financials?range_days=${rangeDays}`)
       .then(({ data }) => setFin(data))
       .catch((err) => setError(err.response?.data?.message ?? 'Could not load financials.'))
@@ -346,6 +355,17 @@ export default function FinancePage() {
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
                     {t.cancellations!.refundCount} cancellation refund(s) · already excluded from revenue above
+                  </div>
+                </div>
+              )}
+              {(t.revenue.refundsDeductedFromBookings ?? 0) > 0 && (
+                <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div className="price-row" style={{ padding: 0 }}>
+                    <span>Manual refunds (active bookings)</span>
+                    <strong style={{ color: COST_ORANGE }}>− {egp(t.revenue.refundsDeductedFromBookings!)}</strong>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    Already deducted from court bookings above (gross was {egp(t.revenue.bookingsGross ?? t.revenue.bookings)})
                   </div>
                 </div>
               )}

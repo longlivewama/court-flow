@@ -32,24 +32,24 @@ export default function CheckInPage() {
 
   const today = format(toZonedTime(new Date(), TIMEZONE), 'yyyy-MM-dd');
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { data } = await api.get(`/dashboard/schedule?date=${today}`);
-      // Response shape: { bookings, blockedPeriods }; fall back to old plain array
-      const schedule: Booking[] = Array.isArray(data) ? data : (data?.bookings ?? []);
-      const confirmed = schedule.filter((b) => b.status === 'confirmed');
-      setBookings(confirmed);
-    } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { message?: string } } };
-      setError(axErr?.response?.data?.message ?? 'Failed to load check-in list.');
-    } finally { setLoading(false); }
+  const load = useCallback(() => {
+    return api.get(`/dashboard/schedule?date=${today}`)
+      .then(({ data }) => {
+        // Response shape: { bookings, blockedPeriods }; fall back to old plain array
+        const schedule: Booking[] = Array.isArray(data) ? data : (data?.bookings ?? []);
+        setBookings(schedule.filter((b) => b.status === 'confirmed'));
+      })
+      .catch((err: unknown) => {
+        const axErr = err as { response?: { data?: { message?: string } } };
+        setError(axErr?.response?.data?.message ?? 'Failed to load check-in list.');
+      })
+      .finally(() => setLoading(false));
   }, [today]);
 
   useEffect(() => { load(); }, [load]);
 
   async function handleCheckIn(bookingId: string) {
+    if (processing) return; // guards against a duplicate mutation from a double-click
     setProcessing(bookingId);
     setActionError('');
     try {

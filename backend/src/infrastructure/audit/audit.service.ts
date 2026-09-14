@@ -61,19 +61,37 @@ export async function auditLog(entry: AuditEntry): Promise<void> {
  * unaudited operation must not be allowed to proceed.
  */
 export async function auditLogStrict(client: PoolClient, entry: AuditEntry): Promise<void> {
-  await client.query(AUDIT_INSERT_SQL, [
-    entry.clubId,
-    entry.userId ?? null,
-    entry.userRole ?? null,
-    entry.ipAddress ?? null,
-    entry.deviceInfo ?? null,
-    entry.actionType,
-    entry.entityType,
-    entry.entityId ?? null,
-    entry.previousValues ? JSON.stringify(entry.previousValues) : null,
-    entry.newValues      ? JSON.stringify(entry.newValues)      : null,
-    entry.reason ?? null,
-  ]);
+  // The caller's transaction client authenticates as courtflow_app, which
+  // (migration 018) has no INSERT on audit_logs — only audit_writer does.
+  // Migration 022 grants courtflow_app non-inheriting membership in
+  // audit_writer specifically so this function can assume it for exactly
+  // this one statement; SET LOCAL confines the elevation to the current
+  // transaction, and RESET ROLE drops back to courtflow_app immediately
+  // afterward so every other statement in the caller's transaction — before
+  // or after this call — keeps running under ordinary least-privilege
+  // courtflow_app, even when multiple audit calls are interleaved with
+  // non-audit writes in the same transaction.
+  await client.query('SET LOCAL ROLE audit_writer');
+  try {
+    await client.query(AUDIT_INSERT_SQL, [
+      entry.clubId,
+      entry.userId ?? null,
+      entry.userRole ?? null,
+      entry.ipAddress ?? null,
+      entry.deviceInfo ?? null,
+      entry.actionType,
+      entry.entityType,
+      entry.entityId ?? null,
+      entry.previousValues ? JSON.stringify(entry.previousValues) : null,
+      entry.newValues      ? JSON.stringify(entry.newValues)      : null,
+      entry.reason ?? null,
+    ]);
+  } finally {
+    // Best-effort: if the INSERT above failed, the transaction is already
+    // aborted and this is a no-op until the caller rolls back — never let a
+    // RESET failure hide the real error.
+    await client.query('RESET ROLE').catch(() => {});
+  }
 }
 
 // ── Standard action types ─────────────────────────────────────
@@ -84,6 +102,7 @@ export const AUDIT_ACTIONS = {
   USER_LOGIN:              'USER_LOGIN',
   USER_LOGIN_FAILED:       'USER_LOGIN_FAILED',
   USER_LOCKED_OUT:         'USER_LOCKED_OUT',
+  PASSWORD_RESET_REQUESTED: 'PASSWORD_RESET_REQUESTED',
   USER_PASSWORD_RESET:     'USER_PASSWORD_RESET',
   USER_EMAIL_VERIFIED:     'USER_EMAIL_VERIFIED',
   USER_LOGOUT:             'USER_LOGOUT',

@@ -76,7 +76,8 @@ export async function createSubscription(
 
   const occurrences = input.termMonths * WEEKS_PER_MONTH;
 
-  return withTransaction(async (client: PoolClient) => {
+  try {
+    return await withTransaction(async (client: PoolClient) => {
     // IDOR guard (defense in depth — also checked in subscription.controller.ts
     // before this use case is ever called): the target customer must belong to
     // the same club as the subscription being created, never trusted blind.
@@ -217,5 +218,16 @@ export async function createSubscription(
       lastStartTime:  starts[starts.length - 1].toISOString(),
       bookingIds,
     };
-  });
+    });
+  } catch (err: unknown) {
+    // Same defense-in-depth backstop as create-booking.usecase.ts: this
+    // should be unreachable (each occurrence is already validated via
+    // validateBookingSlot above), but if migration 021's EXCLUDE constraint
+    // ever does trip, surface a clean conflict instead of a raw 500.
+    const code = (err as { code?: string } | null)?.code;
+    if (code === '23P01' || code === '23505') {
+      throw new ConflictError('One of these weekly slots was just booked by someone else. Please try again.');
+    }
+    throw err;
+  }
 }

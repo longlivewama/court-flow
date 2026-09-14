@@ -101,24 +101,38 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
     // A cancelled booking is excluded from the VERIFIED booking-revenue query
     // above, so it can never inflate earnings. But a deposit FORFEITED on a late
     // cancellation is genuinely retained income — we add it back from the ledger
-    // here. Refunds are money that left the club; because the underlying booking
-    // is already excluded from revenue, we report refundsOut for transparency
-    // WITHOUT subtracting it again (that would double-count the loss).
+    // here. A cancellation REFUND is money that left the club; because the
+    // underlying booking is already excluded from revenue, it's reported for
+    // transparency WITHOUT subtracting it again (that would double-count the
+    // loss). A MANUAL refund (owner-approved via /api/refunds, independent of
+    // cancellation) behaves differently: its booking is still VERIFIED and
+    // still counted at full gross above, so that refund amount must actually
+    // be subtracted here — otherwise a booking that was fully refunded after
+    // the fact would still be reported as fully collected revenue.
     const { rows: ledgerRows } = await db.query(
       `SELECT
-         COALESCE(SUM(amount) FILTER (WHERE entry_type = 'FORFEIT_INCOME'), 0)::numeric AS forfeited_income,
-         COALESCE(SUM(amount) FILTER (WHERE entry_type = 'REFUND'),         0)::numeric AS refunds_out,
-         COUNT(*) FILTER (WHERE entry_type = 'FORFEIT_INCOME')::int                     AS forfeit_count,
-         COUNT(*) FILTER (WHERE entry_type = 'REFUND')::int                             AS refund_count
-       FROM ledger_entries
-       WHERE club_id = $1 AND created_at >= NOW() - ($2 || ' days')::interval`,
+         COALESCE(SUM(le.amount) FILTER (WHERE le.entry_type = 'FORFEIT_INCOME'), 0)::numeric AS forfeited_income,
+         COALESCE(SUM(le.amount) FILTER (WHERE le.entry_type = 'REFUND' AND b.status = 'cancelled'), 0)::numeric AS cancellation_refunds_out,
+         COALESCE(SUM(le.amount) FILTER (WHERE le.entry_type = 'REFUND' AND b.status IN ${VERIFIED}), 0)::numeric AS active_booking_refunds_out,
+         COUNT(*) FILTER (WHERE le.entry_type = 'FORFEIT_INCOME')::int AS forfeit_count,
+         COUNT(*) FILTER (WHERE le.entry_type = 'REFUND' AND b.status = 'cancelled')::int AS cancellation_refund_count,
+         COUNT(*) FILTER (WHERE le.entry_type = 'REFUND' AND b.status IN ${VERIFIED})::int AS active_booking_refund_count
+       FROM ledger_entries le
+       LEFT JOIN bookings b ON b.id = le.booking_id
+       WHERE le.club_id = $1 AND le.created_at >= NOW() - ($2 || ' days')::interval`,
       [clubIdOf(req), rangeDays]
     );
 
     // ── Monthly P&L series (last 6 calendar months) ────────────────
+    // The bookings branch buckets by CourtFlow's operational day/month (06:00
+    // Cairo boundary — see the identical comment in report.controller.ts's
+    // daily_revenue query), so a 02:00 booking on the 1st still counts toward
+    // the previous month, matching every other operational-day-bucketed
+    // revenue view. tournament/training branches key off `paid_at` (a payment
+    // timestamp, not court usage time) and are unaffected by this boundary.
     const { rows: monthlyRevenue } = await db.query(
       `SELECT month, SUM(amount)::numeric AS revenue FROM (
-         SELECT TO_CHAR(DATE_TRUNC('month', b.start_time AT TIME ZONE '${TZ}'), 'YYYY-MM') AS month,
+         SELECT TO_CHAR(DATE_TRUNC('month', (b.start_time AT TIME ZONE '${TZ}') - INTERVAL '6 hours'), 'YYYY-MM') AS month,
                 ${COLLECTED} AS amount
          FROM bookings b
          WHERE b.club_id = $1 AND b.deleted_at IS NULL AND b.status IN ${VERIFIED}
@@ -169,7 +183,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
     });
 
     // ── Assemble totals ────────────────────────────────────────────
-    const bookings          = Number(bookingRows[0].current);
+    const bookingsGross     = Number(bookingRows[0].current);
     const bookingsPrev      = Number(bookingRows[0].previous);
     const tournaments       = Number(tournamentRows[0].collected);
     const tournamentOutstanding = Number(tournamentRows[0].outstanding);
@@ -185,10 +199,17 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
     const operatingExpenses  = expensesByCategory.reduce((s, e) => s + e.total, 0);
 
     // Cancellation ledger figures
-    const forfeitedIncome = Number(ledgerRows[0].forfeited_income);
-    const refundsOut      = Number(ledgerRows[0].refunds_out);
-    const forfeitCount    = Number(ledgerRows[0].forfeit_count);
-    const refundCount     = Number(ledgerRows[0].refund_count);
+    const forfeitedIncome           = Number(ledgerRows[0].forfeited_income);
+    const cancellationRefundsOut    = Number(ledgerRows[0].cancellation_refunds_out);
+    const forfeitCount              = Number(ledgerRows[0].forfeit_count);
+    const cancellationRefundCount   = Number(ledgerRows[0].cancellation_refund_count);
+
+    // Manual (non-cancellation) refunds against bookings that are still
+    // counted at full gross above — must be netted out of court-booking
+    // revenue, unlike cancellation refunds (see comment on ledgerRows).
+    const activeBookingRefundsOut   = Number(ledgerRows[0].active_booking_refunds_out);
+    const activeBookingRefundCount  = Number(ledgerRows[0].active_booking_refund_count);
+    const bookings = Math.round((bookingsGross - activeBookingRefundsOut) * 100) / 100;
 
     const totalRevenue = bookings + tournaments + training + forfeitedIncome;
     const totalCosts   = operatingExpenses + coachPayouts;
@@ -246,10 +267,17 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
       });
     }
 
-    if (refundsOut > 0 && refundCount > 0) {
+    if (cancellationRefundsOut > 0 && cancellationRefundCount > 0) {
       recommendations.push({
         severity: 'info',
-        text: `EGP ${Math.round(refundsOut).toLocaleString()} was refunded across ${refundCount} cancellation(s) in the last ${rangeDays} days${forfeitedIncome > 0 ? `, offset by EGP ${Math.round(forfeitedIncome).toLocaleString()} in forfeited deposits retained` : ''}. Review your cancellation-deadline window if refunds are trending up.`,
+        text: `EGP ${Math.round(cancellationRefundsOut).toLocaleString()} was refunded across ${cancellationRefundCount} cancellation(s) in the last ${rangeDays} days${forfeitedIncome > 0 ? `, offset by EGP ${Math.round(forfeitedIncome).toLocaleString()} in forfeited deposits retained` : ''}. Review your cancellation-deadline window if refunds are trending up.`,
+      });
+    }
+
+    if (activeBookingRefundsOut > 0 && activeBookingRefundCount > 0) {
+      recommendations.push({
+        severity: 'info',
+        text: `EGP ${Math.round(activeBookingRefundsOut).toLocaleString()} was manually refunded across ${activeBookingRefundCount} booking(s) in the last ${rangeDays} days and has been deducted from court booking revenue.`,
       });
     }
 
@@ -286,6 +314,8 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
       totals: {
         revenue: {
           bookings,
+          bookingsGross,
+          refundsDeductedFromBookings: activeBookingRefundsOut,
           tournaments,
           training,
           forfeitedDeposits: forfeitedIncome,
@@ -298,15 +328,18 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
           coachPayouts,
           total: totalCosts,
         },
-        // Cancellation impact, sourced from the immutable ledger. refundsOut is
-        // reported for transparency but is NOT re-subtracted from netProfit (the
-        // refunded booking is already excluded from revenue upstream).
+        // Cancellation impact, sourced from the immutable ledger. refundsOut here
+        // is cancellation refunds ONLY — reported for transparency but NOT
+        // re-subtracted from netProfit (the refunded booking is already excluded
+        // from revenue upstream). Manual refunds against still-active bookings
+        // are a separate figure (revenue.refundsDeductedFromBookings) because
+        // those ARE subtracted, right above.
         cancellations: {
           forfeitedIncome,
-          refundsOut,
+          refundsOut: cancellationRefundsOut,
           forfeitCount,
-          refundCount,
-          netImpact: forfeitedIncome - refundsOut,
+          refundCount: cancellationRefundCount,
+          netImpact: forfeitedIncome - cancellationRefundsOut,
         },
         trainingClubShare,
         tournamentOutstanding,

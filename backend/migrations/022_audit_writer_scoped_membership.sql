@@ -1,0 +1,34 @@
+-- ════════════════════════════════════════════════════════════════════════════
+-- 022_audit_writer_scoped_membership.sql
+--
+-- Fixes a real, reproducible production bug: POST /api/bookings (and every
+-- other write path using auditLogStrict — cancellation, deletion, deposit
+-- verification, refunds, coaching sessions) fails with
+--   error: permission denied for table audit_logs (42501)
+-- because auditLogStrict() runs on the CALLER's transaction client, which
+-- since migration 018 is always the `courtflow_app` role — and 018
+-- deliberately revoked INSERT on audit_logs from courtflow_app (only
+-- audit_writer may INSERT, enforced under FORCE ROW LEVEL SECURITY).
+--
+-- auditLogStrict's whole purpose is committing the audit row atomically in
+-- the SAME transaction as the operation it records, so it cannot simply use
+-- the separate audit_writer/DATABASE_URL_AUDIT connection pool (a different
+-- physical connection cannot join another connection's open transaction).
+--
+-- The fix is NOT to grant courtflow_app blanket INSERT on audit_logs (that
+-- would let any ordinary, non-audit query written against courtflow_app
+-- insert forged audit rows, and would defeat the least-privilege model 018
+-- established). Instead: grant courtflow_app MEMBERSHIP in audit_writer
+-- WITH INHERIT FALSE. Membership without inheritance means courtflow_app
+-- gains the *ability* to explicitly `SET LOCAL ROLE audit_writer` for a
+-- single statement — it does NOT automatically receive audit_writer's
+-- INSERT privilege on every query the way a normal (inheriting) grant would.
+-- audit.service.ts's auditLogStrict() is the only code that ever issues that
+-- SET LOCAL ROLE, immediately followed by RESET ROLE after the insert (see
+-- that file) so every other statement in the same transaction still runs as
+-- plain courtflow_app. RLS on audit_logs stays FORCEd and unchanged — the
+-- role is still non-superuser/non-owner, so the audit_logs_insert policy's
+-- WITH CHECK still applies even while SET ROLE'd.
+-- ════════════════════════════════════════════════════════════════════════════
+
+GRANT audit_writer TO courtflow_app WITH INHERIT FALSE;

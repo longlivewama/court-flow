@@ -14,6 +14,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
+import { parsePagination, parseDateParam } from '../../../shared/query-params';
 
 
 const LEDGER_STATUS_SQL = `
@@ -27,8 +28,10 @@ const LEDGER_STATUS_SQL = `
 
 export async function listPayments(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { status, from, to, search, page = '1', limit = '25' } = req.query as Record<string, string>;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { status, search } = req.query as Record<string, string>;
+    const from = parseDateParam(req.query.from, 'from');
+    const to   = parseDateParam(req.query.to, 'to');
+    const { page, limit, offset } = parsePagination(req.query, { limit: 25, maxLimit: 200 });
 
     const params: unknown[] = [clubIdOf(req)];
     const conditions: string[] = ['p.club_id = $1', 'b.deleted_at IS NULL'];
@@ -49,12 +52,12 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
     }
 
     const where = conditions.join(' AND ');
-    params.push(parseInt(limit), offset);
+    params.push(limit, offset);
 
     const { rows } = await db.query(
       `SELECT p.id, p.booking_id, p.status AS payment_status,
               ${LEDGER_STATUS_SQL}          AS ledger_status,
-              p.total_amount, p.created_at, p.verified_at, p.balance_paid_at,
+              p.total_amount, p.refunded_amount, p.created_at, p.verified_at, p.balance_paid_at,
               b.start_time, b.deposit_amount, b.remainder_amount, b.discount_amount,
               b.deposit_method, b.remainder_method, b.status AS booking_status,
               b.subscription_id,
@@ -93,8 +96,8 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
     const s = summaryRows[0];
     res.json({
       data: rows,
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page,
+      limit,
       summary: {
         collected:     Number(s.collected),
         outstanding:   Number(s.outstanding),

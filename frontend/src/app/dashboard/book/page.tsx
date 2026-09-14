@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '@/lib/api';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import {
-  Calendar, Clock, CreditCard, Search, User, ChevronDown, X, UploadCloud, Wallet,
+  Calendar, Clock, CreditCard, User, UploadCloud, Wallet,
 } from 'lucide-react';
 import { format, addMinutes } from 'date-fns';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
@@ -25,14 +25,6 @@ interface Court {
   is_indoor: boolean;
 }
 
-interface Customer {
-  id: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  phone?: string;
-}
-
 // Bookings are whole-hour blocks: start/end dropdowns only offer :00
 // options, and a booking can span up to MAX_BOOKING_HOURS consecutive
 // hours (wrapping past midnight into the next day).
@@ -45,178 +37,6 @@ function hourLabel(rawHour: number): string {
   const displayH = h24 % 12 === 0 ? 12 : h24 % 12;
   const suffix   = h24 === 0 ? ' (Midnight)' : h24 === 12 ? ' (Noon)' : '';
   return `${String(displayH).padStart(2, '0')}:00 ${ampm}${suffix}`;
-}
-
-// ── Customer search dropdown ──────────────────────────────────────────────────
-interface CustomerPickerProps {
-  customers:  Customer[];
-  loading:    boolean;
-  value:      Customer | null;
-  onChange:   (c: Customer | null) => void;
-  searchText: string;
-  onSearch:   (q: string) => void;
-}
-
-function CustomerPicker({ customers, loading, value, onChange, searchText, onSearch }: CustomerPickerProps) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  // Close on outside click
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      {/* Trigger / selected display */}
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          width: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '9px 12px',
-          background: 'var(--bg-primary)',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          color: value ? 'var(--text-primary)' : 'var(--text-tertiary)',
-          fontSize: 14,
-          cursor: 'pointer',
-          textAlign: 'left',
-          transition: 'border-color 0.15s',
-        }}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        id="customer-picker-btn"
-      >
-        <User size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-        <span style={{ flex: 1 }}>
-          {value
-            ? `${value.first_name} ${value.last_name} · ${value.email}`
-            : 'Select a customer…'}
-        </span>
-        {value && (
-          <span
-            role="button"
-            aria-label="Clear customer"
-            onClick={(e) => { e.stopPropagation(); onChange(null); onSearch(''); }}
-            style={{ lineHeight: 0, cursor: 'pointer', color: 'var(--text-tertiary)' }}
-          >
-            <X size={13} />
-          </span>
-        )}
-        <ChevronDown
-          size={13}
-          style={{
-            color: 'var(--text-tertiary)', flexShrink: 0,
-            transform: open ? 'rotate(180deg)' : undefined,
-            transition: 'transform 0.15s',
-          }}
-        />
-      </button>
-
-      {/* Dropdown panel */}
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 28 }}
-            style={{
-              position: 'absolute',
-              top: 'calc(100% + 6px)',
-              left: 0, right: 0,
-              zIndex: 50,
-              background: 'var(--bg-elevated, var(--bg-secondary))',
-              border: '1px solid var(--border)',
-              borderRadius: 10,
-              boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-              overflow: 'hidden',
-            }}
-            role="listbox"
-            aria-label="Customer list"
-          >
-            {/* Search input */}
-            <div
-              style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '8px 12px',
-                borderBottom: '1px solid var(--border)',
-              }}
-            >
-              <Search size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-              <input
-                autoFocus
-                placeholder="Search name or email…"
-                value={searchText}
-                onChange={(e) => onSearch(e.target.value)}
-                style={{
-                  flex: 1, background: 'transparent', border: 'none',
-                  outline: 'none', fontSize: 13, color: 'var(--text-primary)',
-                }}
-                aria-label="Search customers"
-              />
-            </div>
-
-            {/* Results */}
-            <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-              {loading ? (
-                Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} style={{ padding: '10px 12px' }}>
-                    <div className="skeleton" style={{ height: 13, width: i === 0 ? '70%' : '55%', marginBottom: 4 }} />
-                    <div className="skeleton" style={{ height: 11, width: '40%' }} />
-                  </div>
-                ))
-              ) : customers.length === 0 ? (
-                <div style={{ padding: '16px 12px', textAlign: 'center', fontSize: 13, color: 'var(--text-tertiary)' }}>
-                  No customers found
-                </div>
-              ) : (
-                customers.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    role="option"
-                    aria-selected={value?.id === c.id}
-                    onClick={() => { onChange(c); setOpen(false); onSearch(''); }}
-                    style={{
-                      width: '100%', display: 'flex', flexDirection: 'column',
-                      gap: 2, padding: '10px 12px', background: value?.id === c.id
-                        ? 'var(--accent-muted, rgba(124,58,237,0.08))'
-                        : 'transparent',
-                      border: 'none', cursor: 'pointer', textAlign: 'left',
-                      borderBottom: '1px solid var(--border)',
-                      transition: 'background 0.1s',
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.background = 'var(--bg-secondary)';
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.background = value?.id === c.id
-                        ? 'var(--accent-muted, rgba(124,58,237,0.08))'
-                        : 'transparent';
-                    }}
-                  >
-                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
-                      {c.first_name} {c.last_name}
-                    </span>
-                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{c.email}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
 }
 
 // Customer receipt constraints (mirror backend upload-receipt.usecase)
@@ -273,15 +93,15 @@ function BookCourtForm() {
   const [optimisticSuccess, setOptimisticSuccess] = useState(false);
 
   // ── Load courts ───────────────────────────────────────────────
-  const loadCourts = useCallback(async () => {
-    try {
-      const { data } = await api.get('/courts');
-      setCourts(data.data ?? data);
-    } catch {
-      setCourts([]);
-    } finally {
-      setCourtsLoading(false);
-    }
+  // A .then/.catch/.finally chain (rather than async/await) so every state
+  // update runs inside a promise callback, not synchronously in the
+  // function's own call frame — this is what lets the effect below call it
+  // directly without React flagging a synchronous setState-in-effect.
+  const loadCourts = useCallback(() => {
+    return api.get('/courts')
+      .then(({ data }) => setCourts(data.data ?? data))
+      .catch(() => setCourts([]))
+      .finally(() => setCourtsLoading(false));
   }, []);
 
   useEffect(() => { loadCourts(); }, [loadCourts]);
@@ -378,6 +198,11 @@ function BookCourtForm() {
     }
     // Customers cannot book a slot whose start time has already passed
     // (mirrors the server-side guard in create-booking.usecase.ts).
+    // handleSubmit is only ever invoked via <form onSubmit={handleSubmit}>,
+    // never during render; React's purity rules explicitly exempt event
+    // handlers from this constraint, but this rule's static analysis can't
+    // prove that and flags it regardless.
+    // eslint-disable-next-line react-hooks/purity
     if (!isStaff && startDateTime.getTime() < Date.now()) {
       return setError('Start time must be in the future.');
     }
@@ -594,7 +419,7 @@ function BookCourtForm() {
                   className="input"
                   type="date"
                   value={date}
-                  min={format(new Date(), 'yyyy-MM-dd')}
+                  min={isStaff ? undefined : format(new Date(), 'yyyy-MM-dd')}
                   onChange={(e) => setDate(e.target.value)}
                   required
                 />

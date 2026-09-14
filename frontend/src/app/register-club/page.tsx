@@ -9,6 +9,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, Building2, CheckCircle2 } from 'lucide-react';
+import type { AxiosError } from 'axios';
 import { api } from '@/lib/api';
 import { EASE_STANDARD } from '@/lib/motion-tokens';
 
@@ -45,6 +46,7 @@ export default function RegisterClubPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return; // guards against a duplicate submit (e.g. rapid Enter presses)
     setError('');
     if (!SLUG_RE.test(form.clubSlug)) {
       setError('Club slug must be 3–63 lowercase letters, numbers or inner hyphens.');
@@ -63,7 +65,7 @@ export default function RegisterClubPage() {
       });
       setDone({ clubSlug: data.clubSlug });
     } catch (err: unknown) {
-      const resp = (err as any)?.response?.data;
+      const resp = (err as AxiosError<{ message?: string; details?: { message?: string }[] }>)?.response?.data;
       setError(resp?.details?.[0]?.message ?? resp?.message ?? 'Club registration failed. Please try again.');
     } finally {
       setLoading(false);

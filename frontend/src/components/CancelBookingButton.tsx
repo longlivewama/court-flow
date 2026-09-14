@@ -45,13 +45,18 @@ export function CancelBookingButton({
   const [override, setOverride] = useState<'auto' | 'refund' | 'forfeit'>('auto');
   const [busy, setBusy]       = useState(false);
   const [error, setError]     = useState('');
+  // "Now" for the pre-cancel estimate below — a lazy useState initializer
+  // (allowed to be impure; it only runs once, at mount) refreshed from the
+  // "Cancel" button's own click handler (also allowed — purity rules only
+  // constrain the render body itself) each time the confirm modal opens.
+  const [now, setNow]         = useState(() => Date.now());
 
   if (TERMINAL.includes(status)) return null;
 
   const collected =
     (depositMethod && depositMethod !== 'NONE' ? Number(depositAmount) : 0) +
     (remainderMethod && remainderMethod !== 'NONE' ? Number(remainderAmount) : 0);
-  const hoursUntilStart = (new Date(startTime).getTime() - Date.now()) / 3_600_000;
+  const hoursUntilStart = (new Date(startTime).getTime() - now) / 3_600_000;
   const afterDeadline   = hoursUntilStart < DEFAULT_DEADLINE_HOURS;
   const outcome: 'none' | 'refund' | 'forfeit' =
     collected <= 0          ? 'none'
@@ -61,6 +66,7 @@ export function CancelBookingButton({
     : 'refund';
 
   async function confirm() {
+    if (busy) return; // guards against a duplicate mutation from a double-click
     if (isStaff && !reason.trim()) { setError('A cancellation reason is required.'); return; }
     setBusy(true);
     setError('');
@@ -86,7 +92,7 @@ export function CancelBookingButton({
       <motion.button
         type="button"
         className={className ?? 'btn btn-danger btn-sm'}
-        onClick={() => setOpen(true)}
+        onClick={() => { setNow(Date.now()); setOpen(true); }}
         whileTap={{ scale: 0.97 }}
         aria-label="Cancel this booking"
       >
