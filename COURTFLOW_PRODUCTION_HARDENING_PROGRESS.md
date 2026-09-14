@@ -60,11 +60,25 @@ Live-verified (this dev environment's SMTP points at a fake host, `smtp.example.
 - **Worker restart durability**: inherent to the design (DB-column state, not in-memory) — also incidentally exercised for real earlier this session, since the API container was rebuilt/restarted multiple times without any reminder-state loss.
 - Test booking fully cleaned up afterward (payments, audit rows, booking row — no ledger entries were created, so no append-only-cleanup blocker this time).
 
+## 2026-09-14 (session 3) — Phase 5: production credential/configuration check
+- `docker-compose.yml`'s DB/Redis passwords already correctly use `${VAR:-dev-default}` — production can override via env without code changes. No fix needed there.
+- **Found and fixed a real gap**: the `api` service hardcoded `NODE_ENV: development` (not `${NODE_ENV:-development}`), which — via `resolveSsl()` in `database/client.ts` — unconditionally disables Postgres TLS verification whenever this exact compose file is used, regardless of what a production deploy sets elsewhere. Changed to `${NODE_ENV:-development}`, preserving today's local-dev behavior while letting a real deployment actually set `NODE_ENV=production` and get real TLS enforcement. Verified the running stack still starts/health-checks correctly after the change.
+- `.env.example` confirmed placeholder-only (`CHANGE_IN_PRODUCTION` etc.), real `.env` confirmed gitignored.
+
+## 2026-09-14 (session 3) — Phase 7: final code review
+Reviewed the complete diff (86 files, +5697/-697) for the standard checklist: zero added `console.log`/debug statements, zero new TODOs/FIXMEs, zero new `eslint-disable` beyond two narrowly-scoped and justified ones (a standard TS `declare global` namespace-augmentation idiom, and the one documented React-purity-rule false-positive from session 2), zero skipped/`.only` tests, zero commented-out code blocks. Line-reviewed the financial/security-critical diffs not yet personally read this session (`refund.controller.ts`, `payment.controller.ts`, `audit.controller.ts`, `finance.controller.ts`, `auth.middleware.ts`, `routes.ts`, `cron/index.ts`, `create-subscription.usecase.ts`) — all consistent with what was already live-tested, no new concerns. Confirmed the one new migration's only privilege change is the single, deliberate, non-inheriting `GRANT audit_writer TO courtflow_app` (no broad grants, no RLS weakening anywhere). Added a frontend CI job (typecheck/lint/build) alongside the existing backend one, since frontend lint is now actually clean — verified the build succeeds even without `frontend/.env.local` (confirming it won't break in CI, which won't have that gitignored file).
+
+**Excluded from the commit** (present in the working tree before this task began, unrelated to hardening): `Mobile App.png`, `landing page.png`, `logo.png`, `outreach/` — marketing/business-development assets, left untouched and still untracked.
+
 ## Remaining known gaps (see final report for full list)
-- Nothing committed to git yet as of the start of session 3 — being finalized now (git commit + push is this session's closing phase).
-- `courtflow_app`/`audit_writer` DB passwords are still the migration-default placeholder (`CHANGE_IN_PRODUCTION`) — fine for this dev stack, must be rotated via `COURTFLOW_APP_DB_PASSWORD`/equivalent before real production. This is an operational/deployment step, not a code defect — the rotation mechanism already exists (`zz_set_*_password.sh`).
+- `courtflow_app`/`audit_writer` DB passwords are still the migration-default placeholder (`CHANGE_IN_PRODUCTION`) — fine for this dev stack, must be rotated via `COURTFLOW_APP_DB_PASSWORD`/equivalent before real production. Operational/deployment step, not a code defect — the rotation mechanism already exists (`zz_set_*_password.sh`).
 - Security regression was targeted (SQLi/XSS/invalid-UUID/rate-limit/live concurrency/cross-tenant/IDOR), not an exhaustive re-attack of every endpoint in the original QA's attack list.
-- One booking's worth of refund-flow test data (~1 booking/payment/refund/ledger entry/receptionist account, from session 2) is permanently stuck in the dev DB — the ledger's append-only trigger blocks the FK-cascade deletes needed to remove it. Harmless, clearly identifiable, but worth knowing before assuming DB row counts are "clean."
+- One booking's worth of refund-flow test data (~1 booking/payment/refund/ledger entry/receptionist account, from session 2) is permanently stuck in the dev DB — the ledger's append-only trigger blocks the FK-cascade deletes needed to remove it. Harmless, clearly identifiable, not touched.
+
+## Git finalization (session 3, closing)
+- Committed as `13ae90534f1749653e6076a2af66128765f403f6` on `fix/refresh-cookie-samesite` — "feat: complete CourtFlow production hardening".
+- Pushed to `origin` (`https://github.com/longlivewama/court-flow.git`). Verified: local HEAD == remote HEAD == `13ae905`, fast-forward push (0 behind / 2 ahead before push), no force used.
+- Working tree clean except the four pre-existing, intentionally-excluded unrelated files noted above.
 
 ## Next exact action
-Session 3 is closing out with: final full regression re-run, final code-review diff pass, git commit, push to `origin` (github.com/longlivewama/court-flow.git). See the final report for the closing production-readiness decision.
+None — this pass is closed out. See `PRODUCTION_READINESS_REPORT.md` for the final decision and remaining operational (non-code) items.
