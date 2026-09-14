@@ -13,6 +13,7 @@ import { db } from '../database/client';
 import { auditLog, AUDIT_ACTIONS } from '../audit/audit.service';
 import { emailService } from '../email/email.service';
 import { logger } from '../../shared/logger';
+import { runWithTenant } from '../../shared/tenant-context';
 
 /**
  * Run `fn` only if this process wins a Postgres session-level advisory lock,
@@ -73,6 +74,10 @@ async function runExpirePendingJob(): Promise<void> {
     }>(`SELECT id, pending_deposit_expiry_minutes FROM clubs`);
 
     for (const club of clubs) {
+      // Scopes every DB call in this iteration to `club.id` (CF-QA-005) —
+      // cron already processes one club at a time, so this is a drop-in fit
+      // for the RLS session variable, no cross-tenant bypass needed here.
+      await runWithTenant(club.id, async () => {
       // expires_at is the per-booking deadline (prime-time bookings carry a
       // tighter 15-minute window — see create-booking.usecase.ts). Legacy
       // rows without one fall back to the club's static window.
@@ -100,6 +105,7 @@ async function runExpirePendingJob(): Promise<void> {
           newValues:  { status: 'expired', reason: 'Deposit not uploaded within time window' },
         });
       }
+      });
     }
   } catch (err) {
     logger.error({ err }, 'Error in expire-pending cron job');
@@ -116,6 +122,7 @@ async function runExpireStalledBookingsJob(): Promise<void> {
     }>(`SELECT id, pending_deposit_expiry_minutes, draft_expiry_minutes FROM clubs`);
 
     for (const club of clubs) {
+      await runWithTenant(club.id, async () => {
       // Pass 1: stale 'draft' bookings (receptionist-created, never finalized)
       const { rows: expiredDrafts } = await db.query<{
         id: string;
@@ -172,6 +179,7 @@ async function runExpireStalledBookingsJob(): Promise<void> {
           newValues:  { status: 'expired', reason: 'Deposit not uploaded within time window (15-min safety sweep)' },
         });
       }
+      });
     }
   } catch (err) {
     logger.error({ err }, 'Error in expire-stalled-bookings cron job');
@@ -187,6 +195,7 @@ async function runNoShowJob(): Promise<void> {
     }>(`SELECT id, noshow_grace_minutes FROM clubs`);
 
     for (const club of clubs) {
+      await runWithTenant(club.id, async () => {
       const { rows: noshowBookings } = await db.query<{
         id: string;
         customer_id: string;
@@ -233,6 +242,7 @@ async function runNoShowJob(): Promise<void> {
           logger.error({ err, bookingId: booking.id }, 'Failed to finalize no-show notification');
         }
       }
+      });
     }
   } catch (err) {
     logger.error({ err }, 'Error in no-show cron job');
@@ -273,6 +283,14 @@ const REMINDER_SENT_COLUMN = {
 type ReminderLabel = keyof typeof REMINDER_SENT_COLUMN;
 
 export async function sendReminders(
+  clubId: string,
+  minutesBefore: number,
+  label: ReminderLabel
+): Promise<void> {
+  return runWithTenant(clubId, () => sendRemindersScoped(clubId, minutesBefore, label));
+}
+
+async function sendRemindersScoped(
   clubId: string,
   minutesBefore: number,
   label: ReminderLabel

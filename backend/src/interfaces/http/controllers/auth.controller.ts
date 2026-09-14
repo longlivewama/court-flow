@@ -722,21 +722,16 @@ export async function listCustomers(
 }
 
 // Granular permission flags — kept in sync with migration 014 and the
-// requirePermission() allowlist in tenant.middleware.ts.
-const PERMISSION_KEYS = [
-  'can_view_schedule',
-  'can_verify_deposits',
-  'can_manage_coaches',
-  'can_view_finance',
-] as const;
-type PermissionKey = (typeof PERMISSION_KEYS)[number];
-
+// requirePermission() allowlist in tenant.middleware.ts. The schema is the
+// single source of truth for the key set; PermissionKey is derived from it
+// rather than a separate array, so there's nothing to keep in sync by hand.
 const permissionsSchema = z.object({
   can_view_schedule:   z.boolean(),
   can_verify_deposits: z.boolean(),
   can_manage_coaches:  z.boolean(),
   can_view_finance:    z.boolean(),
 });
+type PermissionKey = keyof typeof permissionsSchema.shape;
 
 // ── GET /api/users/staff (owner) ──────────────────────────────
 // Teammates permissions manager: every non-customer account with its

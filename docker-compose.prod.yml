@@ -1,0 +1,50 @@
+# Production override for docker-compose.yml (CF-QA-001).
+#
+# Apply ON TOP of the base file — never alone:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Why this file exists: the base compose file defaults every credential
+# (`${VAR:-dev-default}`) so `docker compose up` works out of the box for
+# local development, and NODE_ENV defaults to `development` for the same
+# reason. That's correct for dev, but it means a real deployment that simply
+# reuses the base file without remembering to export NODE_ENV=production
+# would silently get development security behavior — insecure (non-Secure)
+# cookies, disabled Postgres TLS verification, the dev seed account, and
+# whatever weak defaults happen to be in scope — with no error, no warning.
+#
+# This override makes production explicit instead of implicit:
+#   - NODE_ENV is hardcoded to `production` (not defaulted), so this file
+#     can never be applied without getting production security behavior.
+#   - Every credential below uses `${VAR:?message}`, which makes `docker
+#     compose` itself refuse to start if the variable isn't actually set in
+#     the shell/.env — instead of quietly falling back to the base file's
+#     dev-only default. The app's own bootstrap checks (assertWebhookSecretConfigured,
+#     jwt.service's key check, seedDefaultOwner's NODE_ENV guard) provide a
+#     second, independent fail-closed layer for secrets this file doesn't
+#     touch directly (PAYMENT_WEBHOOK_SECRET, JWT keys, SMTP, WhatsApp,
+#     Google Sheets — all read from backend/.env via env_file).
+#
+# Rotate every one of these to a real secret before applying this file —
+# `CHANGE_IN_PRODUCTION` / `courtflow_pass` / `redis_pass` are dev-only
+# placeholders and are deliberately NOT valid defaults here.
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD:         ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set for production}
+      AUDIT_DB_PASSWORD:         ${AUDIT_DB_PASSWORD:?AUDIT_DB_PASSWORD must be set for production}
+      COURTFLOW_APP_DB_PASSWORD: ${COURTFLOW_APP_DB_PASSWORD:?COURTFLOW_APP_DB_PASSWORD must be set for production}
+
+  redis:
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set for production}
+
+  api:
+    environment:
+      NODE_ENV:           production
+      DATABASE_URL:       postgresql://courtflow:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set for production}@postgres:5432/courtflow
+      DATABASE_URL_AUDIT: postgresql://audit_writer:${AUDIT_DB_PASSWORD:?AUDIT_DB_PASSWORD must be set for production}@postgres:5432/courtflow
+      DATABASE_URL_APP:   postgresql://courtflow_app:${COURTFLOW_APP_DB_PASSWORD:?COURTFLOW_APP_DB_PASSWORD must be set for production}@postgres:5432/courtflow
+      REDIS_URL:          redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set for production}@redis:6379
+
+  frontend:
+    environment:
+      NODE_ENV: production

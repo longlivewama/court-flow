@@ -112,6 +112,47 @@ describe('createSubscription — staff occurrences', () => {
   );
 });
 
+describe('createSubscription — court lock is tenant-scoped (CF-QA-S001)', () => {
+  test('the FOR UPDATE lock on courts is scoped by club_id, not just id', async () => {
+    const client = makeClient();
+    runAgainst(client);
+
+    await createSubscription(baseInput());
+
+    const lockCalls = client.calls.filter((c) => /FROM\s+courts/i.test(c.text) && /FOR UPDATE/i.test(c.text));
+    // Exactly one locking query against courts — the lock and the tenant
+    // membership check must be the same query, not a separate unscoped
+    // lock followed by a scoped read (which would still take a real row
+    // lock on a foreign tenant's court before ever checking club_id).
+    expect(lockCalls).toHaveLength(1);
+    expect(lockCalls[0].text).toMatch(/WHERE\s+id\s*=\s*\$1\s+AND\s+club_id\s*=\s*\$2\s+FOR UPDATE/i);
+    expect(lockCalls[0].params).toEqual(['court-1', 'club-1']);
+  });
+
+  test('a courtId belonging to another club is rejected without ever locking it unscoped', async () => {
+    const client = makeClient();
+    // Simulate the court row existing but belonging to a different club:
+    // the tenant-scoped lock query itself returns no rows.
+    client.query.mockImplementation(async (text: string, params: unknown[] = []) => {
+      client.calls.push({ text, params });
+      if (/FROM\s+users\s+WHERE\s+id\s*=\s*\$1\s+AND\s+club_id\s*=\s*\$2/i.test(text)) {
+        return { rows: [{ id: 'cust-1' }] };
+      }
+      if (/price_per_slot,\s*name\s+FROM\s+courts/i.test(text)) return { rows: [] };
+      return { rows: [] };
+    });
+    runAgainst(client);
+
+    await expect(createSubscription(baseInput({ courtId: 'foreign-court' }))).rejects.toThrow(ValidationError);
+
+    // No unscoped `FOR UPDATE` lock (id-only, no club_id) was ever issued.
+    const unscopedLock = client.calls.find(
+      (c) => /FROM\s+courts/i.test(c.text) && /FOR UPDATE/i.test(c.text) && !/club_id/i.test(c.text)
+    );
+    expect(unscopedLock).toBeUndefined();
+  });
+});
+
 describe('createSubscription — precondition guards', () => {
   test('rejects an invalid term with ValidationError', async () => {
     const client = makeClient();

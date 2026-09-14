@@ -551,6 +551,15 @@ export default function SchedulePage() {
     courts.length > 0 ? (gridWidth - TIME_AXIS_W) / courts.length : MIN_COL_W
   );
 
+  // TanStack Virtual's useVirtualizer() returns fresh function references
+  // every render by design (its own internal state, not derived from props);
+  // the React Compiler can't prove those are safe to memoize and skips
+  // compiling this hook call as a result — confirmed against 3.14.13 (latest
+  // as of this check), a library-side limitation with no upstream fix yet,
+  // not a version we're behind on. This is advisory only: the compiler
+  // already falls back to uncompiled behavior here regardless of the lint
+  // warning, and this call site has no memoized child consuming its output.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: HOURS.length,
     getScrollElement: () => scrollRef.current,
