@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
-import { NotFoundError, ValidationError } from '../../../shared/errors';
+import { NotFoundError, ValidationError, ConflictError } from '../../../shared/errors';
 
 
 const joinSchema = z.object({
@@ -41,11 +41,28 @@ export async function joinWaitlist(req: Request, res: Response, next: NextFuncti
       if (!courtRows.length) throw new NotFoundError('Court', parsed.courtId);
     }
 
-    const { rows } = await db.query(
-      `INSERT INTO waitlist_entries (club_id, user_id, court_id, desired_start, desired_end)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [clubIdOf(req), req.user!.sub, parsed.courtId ?? null, parsed.desiredStart, parsed.desiredEnd]
-    );
+    // CF-QA-09: the same customer could previously join the identical
+    // club/court/time window any number of times — no uniqueness check
+    // existed at all. Migration 026 adds a partial unique index scoped to
+    // active (fulfilled_at IS NULL) entries; a 23505 here means exactly
+    // that duplicate, including two concurrent identical requests racing
+    // each other (the DB index, not this catch block, is what actually
+    // guarantees only one of them ever commits — this just gives the loser
+    // a clean, business-meaningful response instead of a raw constraint
+    // error surfacing as a 500).
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `INSERT INTO waitlist_entries (club_id, user_id, court_id, desired_start, desired_end)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [clubIdOf(req), req.user!.sub, parsed.courtId ?? null, parsed.desiredStart, parsed.desiredEnd]
+      ));
+    } catch (err: unknown) {
+      if ((err as { code?: string } | null)?.code === '23505') {
+        throw new ConflictError('You are already on the waitlist for this court and time window.');
+      }
+      throw err;
+    }
 
     await auditLog({
       clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,

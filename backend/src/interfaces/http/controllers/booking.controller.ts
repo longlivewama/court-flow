@@ -179,10 +179,20 @@ export async function getFinancialSummary(req: Request, res: Response, next: Nex
 import { z } from 'zod';
 
 const createBookingSchema = z.object({
-  courtId: z.string().optional(),
-  court_id: z.string().optional(),
-  customerId: z.string().optional(),
-  customer_id: z.string().optional(),
+  // CF-QA-08: these are all raw foreign-key references (courts.id,
+  // users.id, equipment.id) reached by a direct parameterized query before
+  // createBooking() is even called (courtId inside the use case itself;
+  // customerId's club-membership check and each equipment line's price
+  // lookup both run right here in this handler) — a non-UUID string used to
+  // sail past validation and hit Postgres raw, which raises the driver-level
+  // `22P02 invalid input syntax for type uuid`, an error the transaction's
+  // constraint-error translation doesn't catch (it only maps 23P01/23505),
+  // so it fell through to a generic 500. `.uuid()` rejects it here instead,
+  // before any query ever runs.
+  courtId: z.string().uuid().optional(),
+  court_id: z.string().uuid().optional(),
+  customerId: z.string().uuid().optional(),
+  customer_id: z.string().uuid().optional(),
   customerName: z.string().optional(),
   customerPhone: z.string().optional(),
   startTime: z.string().optional(),
@@ -211,10 +221,11 @@ const createBookingSchema = z.object({
   // Single-use claim token for a waitlist slot hold (anti-scalping flow)
   waitlistToken: z.string().max(128).optional(),
   waitlist_token: z.string().max(128).optional(),
-  // Rental add-ons: [{ equipmentId, quantity }]
+  // Rental add-ons: [{ equipmentId, quantity }] — each id is a raw FK
+  // reference (equipment.id), same CF-QA-08 crash class as courtId above.
   equipment: z.array(z.object({
-    equipmentId:  z.string().optional(),
-    equipment_id: z.string().optional(),
+    equipmentId:  z.string().uuid().optional(),
+    equipment_id: z.string().uuid().optional(),
     quantity:     z.number().int().positive(),
   })).optional(),
 });

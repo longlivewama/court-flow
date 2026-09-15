@@ -44,6 +44,14 @@ services:
       DATABASE_URL_AUDIT: postgresql://audit_writer:${AUDIT_DB_PASSWORD:?AUDIT_DB_PASSWORD must be set for production}@postgres:5432/courtflow
       DATABASE_URL_APP:   postgresql://courtflow_app:${COURTFLOW_APP_DB_PASSWORD:?COURTFLOW_APP_DB_PASSWORD must be set for production}@postgres:5432/courtflow
       REDIS_URL:          redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set for production}@redis:6379
+      # CF-QA-06: backend/.env's dev default (http://localhost:3000) is not
+      # even reachable in local dev — the frontend container's port is never
+      # published, only nginx is — let alone a real domain. Every
+      # password-reset/email-verification link auth.controller.ts builds
+      # uses this value, so a missed override here means every one of those
+      # emails silently contains a dead link. Same required-variable pattern
+      # as the secrets above: refuse to start rather than fail silently.
+      FRONTEND_URL:       ${FRONTEND_URL:?FRONTEND_URL must be set to the real public origin for production}
 
   frontend:
     environment:
