@@ -333,12 +333,31 @@ export async function createSession(req: Request, res: Response, next: NextFunct
 
     const clubId = clubIdOf(req);
     const session = await withTransaction(async (client) => {
+      // FOR UPDATE locks the coach row so two concurrent session-creation
+      // requests for the SAME coach can't both pass the overlap check below
+      // before either commits — mirrors the court lock further down.
       const { rows: coachRows } = await client.query(
-        `SELECT * FROM coaches WHERE id = $1 AND club_id = $2 AND is_active = TRUE`,
+        `SELECT * FROM coaches WHERE id = $1 AND club_id = $2 AND is_active = TRUE FOR UPDATE`,
         [parsed.coachId, clubId]
       );
       if (!coachRows.length) throw new NotFoundError('Coach', parsed.coachId);
       const coach = coachRows[0];
+
+      // CF-QA-04: a coach can't teach two sessions at once, regardless of
+      // whether either session has a court attached — this check must run
+      // unconditionally, unlike the court-scoped ones below which only make
+      // sense when courtId is supplied. updateSession() (PATCH) never
+      // changes coachId/startTime/endTime, so there is no reschedule path
+      // that needs this same check with a "current session" exclusion.
+      const { rows: coachConflicts } = await client.query(
+        `SELECT id FROM training_sessions
+         WHERE coach_id = $1 AND club_id = $2 AND status <> 'cancelled'
+           AND start_time < $4::timestamptz AND end_time > $3::timestamptz`,
+        [parsed.coachId, clubId, start.toISOString(), end.toISOString()]
+      );
+      if (coachConflicts.length) {
+        throw new ConflictError('This coach already has a training session scheduled during this time window');
+      }
 
       if (parsed.courtId) {
         // Lock the court row so a concurrent booking/training-session create

@@ -75,7 +75,7 @@ export async function createRefundRequest(req: Request, res: Response, next: Nex
         [bookingId, booking.payment_id, req.user!.sub, amount, percent ?? null, reason, internalNotes ?? null]
       );
 
-      await auditLogStrict(client, { clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'receptionist',
+      await auditLogStrict(client, { clubId: clubIdOf(req), userId: req.user!.sub, userRole: req.user!.role,
         ipAddress: req.ip, actionType: AUDIT_ACTIONS.REFUND_REQUESTED, entityType: 'refund',
         entityId: rows[0].id, newValues: { ...rows[0], collectedAmount, alreadyClaimed, netAvailable } });
 

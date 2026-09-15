@@ -6,7 +6,7 @@
  */
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Edit2, Trash2, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, RotateCcw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Toggle } from '@/components/ui/Toggle';
 
@@ -40,12 +40,16 @@ export default function CourtsPage() {
   const [editing, setEditing]   = useState<Court | null>(null);
   const [form, setForm]         = useState<CourtForm>(EMPTY_FORM);
   const [saving, setSaving]     = useState(false);
+  // CF-QA-05: deactivated courts are hidden by default (matches every other
+  // list in the app) but must still be reachable to reactivate — otherwise
+  // deactivating one is a one-way door with no way back.
+  const [showInactive, setShowInactive] = useState(false);
 
   // Bare fetch (no leading synchronous setState) so the mount effect below
   // can call it directly; load() adds the loading/error reset around it for
   // the create/edit/delete event handlers that re-trigger a refetch.
-  function fetchCourts() {
-    return api.get('/courts')
+  function fetchCourts(includeInactive: boolean) {
+    return api.get(`/courts${includeInactive ? '?all=1' : ''}`)
       .then(({ data }) => setCourts(data))
       .catch((err: unknown) => {
         const axErr = err as { response?: { data?: { message?: string } } };
@@ -57,10 +61,17 @@ export default function CourtsPage() {
   function load() {
     setLoading(true);
     setError('');
-    return fetchCourts();
+    return fetchCourts(showInactive);
   }
 
-  useEffect(() => { fetchCourts(); }, []);
+  useEffect(() => { fetchCourts(false); }, []); // mount-only, matching showInactive's initial value; toggling refetches via the handler below, not this effect
+
+  function toggleShowInactive(next: boolean) {
+    setShowInactive(next);
+    setLoading(true);
+    setError('');
+    fetchCourts(next);
+  }
 
   function openCreate() { setEditing(null); setForm(EMPTY_FORM); setError(''); setShowForm(true); }
   function openEdit(c: Court) {
@@ -127,6 +138,17 @@ export default function CourtsPage() {
     await load();
   }
 
+  async function reactivateCourt(court: Court) {
+    setError('');
+    try {
+      await api.patch(`/courts/${court.id}`, { isActive: true });
+      await load();
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { message?: string } } };
+      setError(axErr?.response?.data?.message ?? 'Failed to reactivate court.');
+    }
+  }
+
   // Quick availability toggle: available ↔ closed without opening the modal.
   // The full status set (maintenance, events…) stays in the edit form.
   async function toggleAvailability(court: Court, open: boolean) {
@@ -153,9 +175,12 @@ export default function CourtsPage() {
           <h1 className="page-title">Courts</h1>
           <p className="page-subtitle">Manage court configuration and status</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate} id="create-court-btn">
-          <Plus size={14} /> Add Court
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <Toggle checked={showInactive} onChange={toggleShowInactive} label="Show deactivated courts" />
+          <button className="btn btn-primary" onClick={openCreate} id="create-court-btn">
+            <Plus size={14} /> Add Court
+          </button>
+        </div>
       </div>
 
       {/* Error banner */}
@@ -186,17 +211,25 @@ export default function CourtsPage() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ ...SPRING, delay: i * 0.04 }}
-            style={{ position: 'relative' }}
+            style={{ position: 'relative', opacity: court.is_active ? 1 : 0.6 }}
           >
             {/* Status indicator */}
             <div style={{
               position: 'absolute', top: 16, right: 16,
               width: 8, height: 8, borderRadius: '50%',
-              background: STATUS_COLOR[court.status] ?? 'var(--text-tertiary)',
-            }} title={court.status} />
+              background: court.is_active ? (STATUS_COLOR[court.status] ?? 'var(--text-tertiary)') : 'var(--text-tertiary)',
+            }} title={court.is_active ? court.status : 'deactivated'} />
 
-            <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>
+            <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
               Court {court.number}
+              {!court.is_active && (
+                <span style={{
+                  fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4,
+                  color: 'var(--text-tertiary)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 6px',
+                }}>
+                  Deactivated
+                </span>
+              )}
             </div>
             <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>
               {court.name}
@@ -229,10 +262,11 @@ export default function CourtsPage() {
               <Toggle
                 checked={court.status === 'available'}
                 onChange={(open) => toggleAvailability(court, open)}
+                disabled={!court.is_active}
                 label={`${court.name} open for booking`}
               />
               <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                {court.status === 'available' ? 'Open for booking' : 'Not bookable'}
+                {!court.is_active ? 'Deactivated' : court.status === 'available' ? 'Open for booking' : 'Not bookable'}
               </span>
             </div>
 
@@ -241,10 +275,17 @@ export default function CourtsPage() {
                 onClick={() => openEdit(court)} id={`edit-court-${court.id}`}>
                 <Edit2 size={12} /> Edit
               </button>
-              <button className="btn btn-danger btn-sm" onClick={() => deleteCourt(court.id)}
-                aria-label={`Delete court ${court.name}`}>
-                <Trash2 size={12} />
-              </button>
+              {court.is_active ? (
+                <button className="btn btn-danger btn-sm" onClick={() => deleteCourt(court.id)}
+                  aria-label={`Deactivate court ${court.name}`}>
+                  <Trash2 size={12} />
+                </button>
+              ) : (
+                <button className="btn btn-secondary btn-sm" onClick={() => reactivateCourt(court)}
+                  aria-label={`Reactivate court ${court.name}`}>
+                  <RotateCcw size={12} /> Reactivate
+                </button>
+              )}
             </div>
           </motion.div>
         ))}

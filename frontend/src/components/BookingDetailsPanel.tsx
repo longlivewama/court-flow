@@ -8,7 +8,7 @@
  * actions permitted for the current role.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Repeat, LogIn, XCircle } from 'lucide-react';
+import { Repeat, LogIn, XCircle, RotateCcw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/lib/stores/auth.store';
 import { Drawer } from '@/components/ui/Drawer';
@@ -87,6 +87,10 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
   const [cancelMode, setCancelMode] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [refundOverride, setRefundOverride] = useState<'auto' | 'refund' | 'forfeit'>('auto');
+  const [refundMode, setRefundMode] = useState(false);
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundReason, setRefundReason] = useState('');
+  const [refundNotice, setRefundNotice] = useState('');
   const [acting, setActing]     = useState(false);
   // "Now" for the pre-cancel refund estimate below — a lazy initializer
   // (allowed to be impure; runs once at mount) refreshed inside load()'s
@@ -128,6 +132,10 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
       setCancelMode(false);
       setCancelReason('');
       setRefundOverride('auto');
+      setRefundMode(false);
+      setRefundAmount('');
+      setRefundReason('');
+      setRefundNotice('');
       setLoading(true);
       setError('');
     }
@@ -185,6 +193,50 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
     }
   }
 
+  async function requestRefund() {
+    if (!bookingId || acting) return; // guards against a duplicate mutation from a double-click
+    const amountValue = Number(refundAmount);
+    if (!refundAmount || !Number.isFinite(amountValue) || amountValue <= 0) {
+      setError('Enter a refund amount greater than zero.');
+      return;
+    }
+    if (!refundReason.trim()) {
+      setError('A reason is required.');
+      return;
+    }
+    setActing(true);
+    setError('');
+    setRefundNotice('');
+    try {
+      const { data: refund } = await api.post('/refunds', {
+        bookingId,
+        amount: amountValue,
+        reason: refundReason.trim(),
+      });
+      // Owners already hold approval authority (PATCH /api/refunds/:id is
+      // owner-only) — completing both steps from one click is what actually
+      // fixes CF-QA-02 for a single-owner club with no receptionist to hand
+      // the request to. Receptionists can only create the request; it then
+      // waits for an owner to approve it via this same flow on their own visit.
+      if (user?.role === 'owner') {
+        await api.patch(`/refunds/${refund.id}`, { action: 'approve' });
+        setRefundNotice(`Refund of EGP ${amountValue.toFixed(0)} approved.`);
+      } else {
+        setRefundNotice('Refund requested — awaiting owner approval.');
+      }
+      onChanged?.();
+      load();
+      setRefundMode(false);
+      setRefundAmount('');
+      setRefundReason('');
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string; error?: { message?: string } } } };
+      setError(e.response?.data?.error?.message ?? e.response?.data?.message ?? 'Refund failed');
+    } finally {
+      setActing(false);
+    }
+  }
+
   const total     = Number(booking?.total_price ?? 0);
   const discount  = Number(booking?.discount_amount ?? 0);
   const deposit   = Number(booking?.deposit_amount ?? 0);
@@ -195,6 +247,13 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
 
   const canCancel  = booking && !TERMINAL_STATUSES.includes(booking.status);
   const canCheckIn = isStaff && booking?.status === 'confirmed';
+  // A manual refund is for money already collected on a booking that isn't
+  // being cancelled (cancellation has its own automatic refund/forfeit
+  // path — see the outcome summary above). Backend re-validates the exact
+  // eligible amount and rejects anything already fully refunded; this only
+  // hides the action for the obviously-invalid case of nothing collected yet
+  // or the booking already being cancelled.
+  const canRefund  = isStaff && booking?.status !== 'cancelled' && paid > 0;
 
   // Pre-cancel refund estimate (server returns the authoritative outcome).
   const collectedEstimate =
@@ -219,7 +278,48 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
       subtitle={booking ? `#${booking.id.slice(0, 8)}` : undefined}
       footer={
         booking ? (
-          cancelMode ? (
+          refundMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <input
+                className="input"
+                type="number"
+                min="0.01"
+                step="0.01"
+                placeholder="Refund amount (EGP)"
+                value={refundAmount}
+                onChange={(e) => setRefundAmount(e.target.value)}
+                aria-label="Refund amount"
+              />
+              <input
+                className="input"
+                placeholder="Reason for refund (required)"
+                value={refundReason}
+                onChange={(e) => setRefundReason(e.target.value)}
+                aria-label="Refund reason"
+              />
+              <div style={{
+                fontSize: 12, lineHeight: 1.5, padding: '8px 12px', borderRadius: 8,
+                background: 'var(--surface-2)', border: '1px solid var(--border)',
+                color: 'var(--text-secondary)',
+              }}>
+                {user?.role === 'owner'
+                  ? `Up to EGP ${paid.toFixed(0)} collected so far. As owner, this refund is approved immediately.`
+                  : `Up to EGP ${paid.toFixed(0)} collected so far. An owner must approve this before it takes effect.`}
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => setRefundMode(false)} disabled={acting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={requestRefund}
+                  disabled={acting || !refundAmount || !refundReason.trim()}
+                >
+                  {acting ? 'Processing…' : user?.role === 'owner' ? 'Confirm refund' : 'Request refund'}
+                </button>
+              </div>
+            </div>
+          ) : cancelMode ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
                 className="input"
@@ -284,6 +384,16 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
                   {acting ? 'Checking in…' : 'Check In'}
                 </button>
               )}
+              {canRefund && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => { setRefundAmount(paid.toFixed(2)); setRefundReason(''); setRefundMode(true); }}
+                  disabled={acting}
+                >
+                  <RotateCcw size={14} />
+                  Refund
+                </button>
+              )}
             </div>
           )
         ) : undefined
@@ -292,6 +402,18 @@ export function BookingDetailsPanel({ open, onClose, bookingId, onChanged }: Boo
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 56 }} />)}
+        </div>
+      )}
+
+      {refundNotice && (
+        <div
+          role="status"
+          style={{
+            background: 'var(--surface-2)', border: '1px solid var(--accent-green-text)',
+            color: 'var(--accent-green-text)', borderRadius: 8, padding: '10px 14px', fontSize: 13,
+          }}
+        >
+          {refundNotice}
         </div>
       )}
 
