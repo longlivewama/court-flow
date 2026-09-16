@@ -129,11 +129,29 @@ describe('cancelBooking — refund/forfeit policy', () => {
 
     const paymentUpdate = client.calls.find((c) => /UPDATE payments SET status/i.test(c.text))!;
     expect(paymentUpdate.text).toMatch(/status = 'fully_refunded'/);
-    expect(paymentUpdate.params).toEqual(['payment-1']);
+    // CF-QA-03: refunded_amount must be written alongside status, not left at
+    // its default 0 — this used to be `['payment-1']` (the bug: status said
+    // fully_refunded while refunded_amount silently stayed 0).
+    expect(paymentUpdate.params).toEqual(['payment-1', 500]);
     const ledgerInsert = client.calls.find((c) => /INSERT INTO ledger_entries/i.test(c.text))!;
     expect(ledgerInsert.params[1]).toBe('REFUND');
     expect(ledgerInsert.params[2]).toBe('DEBIT');
     expect(ledgerInsert.params[3]).toBe(500);
+  });
+
+  test('CF-QA-03: refunded_amount always equals the actual refunded amount, never left at 0 while status says fully_refunded', async () => {
+    const client = makeClient({
+      bookingRow: baseBookingRow({ deposit_amount: '750.00' }),
+      deadlineHours: 24,
+    });
+    wire(client);
+
+    await cancelBooking(baseInput());
+
+    const paymentUpdate = client.calls.find((c) => /UPDATE payments SET status = 'fully_refunded'/i.test(c.text))!;
+    expect(paymentUpdate).toBeDefined();
+    expect(paymentUpdate.text).toMatch(/refunded_amount\s*=\s*\$2/);
+    expect(paymentUpdate.params).toEqual(['payment-1', 750]);
   });
 
   test('cancelling after the deadline forfeits the deposit instead of refunding', async () => {

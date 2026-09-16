@@ -188,9 +188,14 @@ export async function cancelBooking(input: CancelBookingInput): Promise<CancelBo
 
     if (refundStatus === 'REFUNDED') {
       if (payment) {
+        // refunded_amount must reflect the money actually returned, same as
+        // the manual-refund path (refund.controller.ts) already does — a
+        // cancellation-triggered refund is always the FULL collected amount
+        // (this flow has no partial-refund branch), so refunded_amount here
+        // always equals refundAmount (== collectedAmount at this point).
         await client.query(
-          `UPDATE payments SET status = 'fully_refunded', updated_at = NOW() WHERE id = $1`,
-          [payment.id]
+          `UPDATE payments SET status = 'fully_refunded', refunded_amount = $2, updated_at = NOW() WHERE id = $1`,
+          [payment.id, refundAmount]
         );
       }
       await recordLedgerEntryStrict(client, {

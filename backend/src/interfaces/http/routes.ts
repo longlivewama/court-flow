@@ -206,7 +206,7 @@ export function registerRoutes(app: Express): void {
   // ── Refund routes ─────────────────────────────────────────────
   const refunds = Router();
   refunds.use(authenticate, requireTenant);
-  refunds.post('/',          requireRole('receptionist'), refundCtrl.createRefundRequest);
+  refunds.post('/',          requireRole('owner', 'receptionist'), refundCtrl.createRefundRequest);
   refunds.get('/',           requireRole('owner', 'receptionist'), refundCtrl.listRefunds);
   refunds.patch('/:id',      requireRole('owner'), requireClubResource('refunds'), refundCtrl.approveOrRejectRefund);
   app.use('/api/refunds', refunds);

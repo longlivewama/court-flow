@@ -31,6 +31,14 @@ const courtUpdateSchema = z.object({
   description:  z.string().trim().max(500).nullable().optional(),
   pricePerSlot: z.number().finite().positive().optional(),
   status:       z.enum(COURT_STATUSES).optional(),
+  // CF-QA-05: this field didn't exist at all before — zod silently strips
+  // unrecognized keys, so `PATCH {isActive:false}` was a no-op 200 that
+  // changed nothing. DELETE /:id remains the primary deactivate action (an
+  // audited COURT_DELETED event); this field's real job is REACTIVATION —
+  // there was no endpoint anywhere to undo a deactivation. Accepting both
+  // directions here rather than only `true` keeps the field's semantics
+  // symmetric instead of an arbitrary one-way door.
+  isActive:     z.boolean().optional(),
 });
 
 // createCourt's own schema: name and pricePerSlot are required (there's no
@@ -67,6 +75,26 @@ const clubSettingsSchema = z.object({
 // ── GET /api/courts ───────────────────────────────────────────
 export async function listCourts(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    // CF-QA-05: owners need a way to see deactivated courts too, or there is
+    // no way to ever find one again to reactivate it — mirrors the same
+    // `?all=1`, owner-only pattern already used by listCoaches(). Bypasses
+    // the cache (owner-only, low-traffic management view; the customer/staff
+    // default path below is completely unaffected).
+    const includeInactive = req.query.all === '1' && req.user!.role === 'owner';
+    if (includeInactive) {
+      const { rows } = await db.query(
+        `SELECT *,
+                number        AS court_number,
+                price_per_slot AS price_per_hour,
+                COALESCE(description, '') AS surface_type,
+                FALSE AS is_indoor
+         FROM courts WHERE club_id=$1 ORDER BY is_active DESC, number`,
+        [clubIdOf(req)]
+      );
+      res.json(rows);
+      return;
+    }
+
     // Cache court list for 30 seconds
     const cacheKey = CACHE_KEYS.courtList(clubIdOf(req));
     const cached   = await redis.get(cacheKey);
@@ -144,7 +172,7 @@ export async function createCourt(req: Request, res: Response, next: NextFunctio
 // ── PATCH /api/courts/:id (owner only) ────────────────────────
 export async function updateCourt(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { name, number, description, pricePerSlot, status } = courtUpdateSchema.parse(req.body);
+    const { name, number, description, pricePerSlot, status, isActive } = courtUpdateSchema.parse(req.body);
     const { rows: old } = await db.query(`SELECT * FROM courts WHERE id=$1 AND club_id=$2`, [req.params.id, clubIdOf(req)]);
     if (!old.length) throw new NotFoundError('Court', req.params.id);
 
@@ -153,19 +181,29 @@ export async function updateCourt(req: Request, res: Response, next: NextFunctio
       ({ rows } = await db.query(
         `UPDATE courts SET name=COALESCE($2,name), number=COALESCE($3,number),
          description=COALESCE($4,description), price_per_slot=COALESCE($5,price_per_slot),
-         status=COALESCE($6,status), updated_at=NOW()
+         status=COALESCE($6,status), is_active=COALESCE($8,is_active), updated_at=NOW()
          WHERE id=$1 AND club_id=$7 RETURNING *`,
-        [req.params.id, name, number, description, pricePerSlot, status, clubIdOf(req)]
+        [req.params.id, name, number, description, pricePerSlot, status, clubIdOf(req), isActive]
       ));
     } catch (err: unknown) {
       if ((err as { code?: string } | null)?.code === '23505') {
-        throw new ConflictError(`Court number ${number} is already in use.`);
+        // Same code covers both the (club_id, number) collision this
+        // endpoint already handled AND the new partial-unique-index case
+        // (migration 025): reactivating a court whose number was already
+        // reused by a different active court. Both are the same class of
+        // conflict from the caller's point of view.
+        throw new ConflictError(
+          isActive === true
+            ? `Court number ${number ?? old[0].number} is already in use by another active court.`
+            : `Court number ${number} is already in use.`
+        );
       }
       throw err;
     }
     await redis.del(CACHE_KEYS.courtList(clubIdOf(req)));
     await auditLog({ clubId: clubIdOf(req), userId: req.user!.sub, userRole: 'owner',
-      actionType: AUDIT_ACTIONS.COURT_UPDATED, entityType: 'court', entityId: req.params.id,
+      actionType: isActive !== undefined ? AUDIT_ACTIONS.COURT_STATUS_CHANGED : AUDIT_ACTIONS.COURT_UPDATED,
+      entityType: 'court', entityId: req.params.id,
       previousValues: old[0], newValues: rows[0] });
     res.json(rows[0]);
   } catch (err) { next(err); }
