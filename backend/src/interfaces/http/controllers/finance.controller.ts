@@ -18,14 +18,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../../../infrastructure/database/client';
 import { clubIdOf } from '../../../shared/tenant';
+import { VERIFIED_STATUSES_SQL as VERIFIED, COLLECTED_SQL as COLLECTED, operationalDayExpr } from '../../../domain/analytics/revenue';
 
 const TZ = 'Africa/Cairo';
-
-const VERIFIED = `('confirmed','checked_in','completed','no_show')`;
-const COLLECTED = `(
-  COALESCE(b.deposit_amount,0)  * (b.deposit_method   IS NOT NULL AND b.deposit_method   <> 'NONE')::int +
-  COALESCE(b.remainder_amount,0)* (b.remainder_method IS NOT NULL AND b.remainder_method <> 'NONE')::int
-)`;
 
 interface Recommendation {
   severity: 'positive' | 'warning' | 'info';
@@ -132,7 +127,7 @@ export async function getFinancials(req: Request, res: Response, next: NextFunct
     // timestamp, not court usage time) and are unaffected by this boundary.
     const { rows: monthlyRevenue } = await db.query(
       `SELECT month, SUM(amount)::numeric AS revenue FROM (
-         SELECT TO_CHAR(DATE_TRUNC('month', (b.start_time AT TIME ZONE '${TZ}') - INTERVAL '6 hours'), 'YYYY-MM') AS month,
+         SELECT TO_CHAR(DATE_TRUNC('month', ${operationalDayExpr('b.start_time', TZ)}), 'YYYY-MM') AS month,
                 ${COLLECTED} AS amount
          FROM bookings b
          WHERE b.club_id = $1 AND b.deleted_at IS NULL AND b.status IN ${VERIFIED}

@@ -100,9 +100,11 @@ export function registerRoutes(app: Express): void {
   waitlist.delete('/:id', requireRole('customer'), requireClubResource('waitlist_entries'), waitlistCtrl.leaveWaitlist);
   app.use('/api/waitlist', waitlist);
 
-  // ── Analytics (owner only) ────────────────────────────────────
+  // ── Analytics (owner + receptionists delegated finance visibility) ──
+  // Mirrors bookings.get('/financial-summary', ...) below: owners always see
+  // this, receptionists only if granted can_view_finance.
   const analytics = Router();
-  analytics.use(authenticate, requireTenant, requireRole('owner'));
+  analytics.use(authenticate, requireTenant, requireRole('receptionist', 'owner'), requirePermission('can_view_finance'));
   analytics.get('/overview',   analyticsCtrl.getAnalyticsOverview);
   analytics.get('/financials', financeCtrl.getFinancials);
   app.use('/api/analytics', analytics);
@@ -165,8 +167,6 @@ export function registerRoutes(app: Express): void {
   bookings.get('/me',               requireRole('customer', 'receptionist', 'owner'), bookingCtrl.listBookings);
   // financial-summary must also be declared BEFORE /:id
   bookings.get('/financial-summary',  requireRole('receptionist', 'owner'), requirePermission('can_view_finance'), bookingCtrl.getFinancialSummary);
-  // analytics-plots must also be declared BEFORE /:id
-  bookings.get('/analytics-plots',    requireRole('owner'), bookingCtrl.getAnalyticsPlots);
   bookings.post('/',                requireRole('customer', 'receptionist', 'owner'), bookingCtrl.createBookingHandler);
   bookings.get('/:id',              requireClubResource('bookings'), bookingCtrl.getBooking);
   bookings.post('/:id/receipt',

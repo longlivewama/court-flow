@@ -16,6 +16,7 @@ import { withTransaction } from '../../../infrastructure/database/client';
 import { decryptFile } from '../../../infrastructure/auth/encryption.service';
 import { auditLog, AUDIT_ACTIONS } from '../../../infrastructure/audit/audit.service';
 import { NotFoundError, ForbiddenError, ValidationError } from '../../../shared/errors';
+import { operationalDayExpr } from '../../../domain/analytics/revenue';
 
 
 const upload = multer({
@@ -130,7 +131,7 @@ export async function getFinancialSummary(req: Request, res: Response, next: Nex
     //   ((start_time AT TIME ZONE tz) - INTERVAL '6 hours')::date
 
     const shiftInterval = `INTERVAL '6 hours'`;
-    const logicalDateExpr = `((start_time AT TIME ZONE '${tz}') - ${shiftInterval})::date`;
+    const logicalDateExpr = `(${operationalDayExpr('start_time', tz)})::date`;
 
     const fromExpr = from ? `$2::date` : `(NOW() AT TIME ZONE '${tz}' - ${shiftInterval})::date`;
     const toExpr   = to   ? `$${from ? 3 : 2}::date` : `(NOW() AT TIME ZONE '${tz}' - ${shiftInterval})::date`;
@@ -674,82 +675,6 @@ export async function settlePaymentHandler(req: Request, res: Response, next: Ne
     });
 
     res.json({ message: 'Payment settled successfully', booking: updatedBooking });
-  } catch (err) { next(err); }
-}
-
-// ── GET /api/bookings/analytics-plots ─────────────────────────
-// Returns two analytics channels for owner charting:
-//   paymentDistribution  – cash-split by method over rolling window
-//   hourlyPeakTraffic    – booking count grouped by local hour
-// Gated to owner / admin.
-export async function getAnalyticsPlots(
-  req: Request, res: Response, next: NextFunction
-): Promise<void> {
-  try {
-    const tz       = 'Africa/Cairo';
-    const rangeDays = Math.min(Math.max(parseInt((req.query.range_days as string) ?? '30', 10), 1), 365);
-
-    // ── 1. Payment-method distribution ──────────────────────────
-    // One-pass conditional aggregate; no subqueries needed.
-    const { rows: distRows } = await db.query(
-      `SELECT
-         COALESCE(SUM(deposit_amount) FILTER (WHERE deposit_method = 'CASH'), 0)::numeric +
-         COALESCE(SUM(remainder_amount) FILTER (WHERE remainder_method = 'CASH'), 0)::numeric AS cash,
-         COALESCE(SUM(deposit_amount) FILTER (WHERE deposit_method = 'VODAFONE_CASH'), 0)::numeric +
-         COALESCE(SUM(remainder_amount) FILTER (WHERE remainder_method = 'VODAFONE_CASH'), 0)::numeric AS vodafone_cash,
-         COALESCE(SUM(deposit_amount) FILTER (WHERE deposit_method = 'INSTAPAY'), 0)::numeric +
-         COALESCE(SUM(remainder_amount) FILTER (WHERE remainder_method = 'INSTAPAY'), 0)::numeric AS instapay
-       FROM bookings
-       WHERE club_id = $1
-         -- Verified payments only (see getFinancialSummary): exclude unverified
-         -- customer self-reports so the analytics cash-split reflects real income.
-         AND status  IN ('confirmed', 'checked_in', 'completed', 'no_show')
-         AND created_at >= NOW() - ($2 || ' days')::interval`,
-      [clubIdOf(req), rangeDays]
-    );
-
-    const dr = distRows[0];
-    const paymentDistribution = [
-      { name: 'CASH',          value: Number(dr.cash) },
-      { name: 'VODAFONE_CASH', value: Number(dr.vodafone_cash) },
-      { name: 'INSTAPAY',      value: Number(dr.instapay) },
-    ];
-
-    // ── 2. Hourly peak traffic ───────────────────────────────────
-    // Extract local hour from start_time, group and count. Only real, honoured
-    // bookings (confirmed / checked_in / completed) count as traffic — draft
-    // and unpaid-pending attempts are excluded so the peak reflects actual
-    // demand rather than abandoned booking attempts.
-    const { rows: peakRows } = await db.query(
-      `SELECT
-         EXTRACT(HOUR FROM (start_time AT TIME ZONE $3))::int AS hour_slot,
-         COUNT(*)::int                                          AS bookings_count
-       FROM bookings
-       WHERE club_id = $1
-         AND status  IN ('confirmed', 'checked_in', 'completed')
-         AND created_at >= NOW() - ($2 || ' days')::interval
-       GROUP BY hour_slot
-       ORDER BY hour_slot`,
-      [clubIdOf(req), rangeDays, tz]
-    );
-
-    // Build a dense 06:00–22:00 series so charts always have full x-axis even
-    // when some hours have zero bookings.
-    const hourMap = new Map<number, number>(peakRows.map((r: { hour_slot: number; bookings_count: number }) => [r.hour_slot, r.bookings_count]));
-    const hourlyPeakTraffic = Array.from({ length: 17 }, (_, i) => {
-      const h = i + 6; // 06:00 … 22:00
-      return {
-        hour:          `${String(h).padStart(2, '0')}:00`,
-        bookingsCount: hourMap.get(h) ?? 0,
-      };
-    });
-
-    res.json({
-      rangeDays,
-      generatedAt:        new Date().toISOString(),
-      paymentDistribution,
-      hourlyPeakTraffic,
-    });
   } catch (err) { next(err); }
 }
 
