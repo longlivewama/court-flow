@@ -23,6 +23,25 @@ jest.mock('../src/infrastructure/database/client', () => ({
   db: { query: jest.fn() },
   withTransaction: jest.fn(),
 }));
+// requireRole is imported from auth.middleware.ts, which also eagerly builds
+// every rate limiter at module scope (see auth.middleware.ts) — each backed
+// by a real RedisStore that fires SCRIPT LOAD commands on construction, over
+// a live ioredis connection with nothing to talk to in CI. That previously
+// crashed the whole test process with an unhandled promise rejection once
+// ioredis's retries were exhausted. Mock both, same as rate-limiter-keyspace
+// .test.ts (the only other test that imports auth.middleware directly).
+jest.mock('../src/infrastructure/cache/redis.client', () => ({
+  redis: { call: jest.fn(), get: jest.fn() },
+  CACHE_KEYS: { tokenRevoked: (id: string) => `token:revoked:${id}` },
+  CACHE_TTL: {},
+}));
+jest.mock('rate-limit-redis', () => ({
+  RedisStore: jest.fn().mockImplementation(() => ({
+    increment: jest.fn(),
+    decrement: jest.fn(),
+    resetKey: jest.fn(),
+  })),
+}));
 jest.mock('../src/infrastructure/audit/audit.service', () => ({
   auditLog: jest.fn().mockResolvedValue(undefined),
   auditLogStrict: jest.fn().mockResolvedValue(undefined),
